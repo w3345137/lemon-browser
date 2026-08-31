@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Lemon 360 数据迁移",
+  "version": "2.0",
+  "description": "一次性把当前 360 浏览器 Cookie 和已保存密码直接发送到本机 Lemon。",
+  "permissions": ["cookies"],
+  "host_permissions": ["<all_urls>", "http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "迁移到 Lemon",
+    "default_popup": "popup.html"
+  }
+}

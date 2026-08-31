@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { width: 320px; padding: 16px; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; color: #222; }
+  h1 { font-size: 16px; margin: 0 0 8px; }
+  p { color: #666; line-height: 1.45; }
+  input { box-sizing: border-box; width: 100%; padding: 8px; margin: 6px 0 10px; }
+  button { width: 100%; padding: 8px; }
+  #status { min-height: 20px; margin-top: 10px; }
+</style>
+<h1>迁移 360 数据到 Lemon</h1>
+<p>先在 Lemon 设置 → 密码中启动接收，再粘贴一次性口令。Cookie 和密码只经过本机 127.0.0.1，迁移完成后请移除此扩展。</p>
+<input id="token" autocomplete="off" placeholder="一次性口令">
+<button id="send">发送登录态和密码</button>
+<div id="status"></div>
+<script src="popup.js"></script>

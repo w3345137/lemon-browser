@@ -1,0 +1,40 @@
+.DS_Store
+.build/
+build/
+build-*/
+DerivedData/
+artifacts/
+deliverables/
+memorys/
+design-qa.md
+
+*.xcuserstate
+**/xcuserdata/
+*.log
+*.tmp
+*.swp
+
+.env
+.env.*
+!.env.example
+gitee.env
+
+# Browser profiles and local personal data
+session.json
+history.json
+downloads.json
+bookmarks.json
+bookmarks.*.json
+session-cookies*.enc
+Login Data
+Cookies
+Local State
+
+# Signing material
+*.cer
+*.p12
+*.mobileprovision
+
+# Local benchmark harness may interact with installed browser profiles.
+Scripts/run-energy-compare.sh
+*.provisionprofile
