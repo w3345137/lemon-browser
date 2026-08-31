@@ -4,6 +4,7 @@ import SwiftUI
 struct AddressBarView: View {
     @Environment(\.openSettings) private var openSettings
     @ObservedObject var state: BrowserWindowState
+    @ObservedObject private var bookmarks: BookmarkStore
     @ObservedObject private var credentialStore = CredentialStore.shared
     @ObservedObject private var downloads: DownloadStore
     var addressFocused: FocusState<Bool>.Binding
@@ -14,6 +15,7 @@ struct AddressBarView: View {
     init(state: BrowserWindowState, addressFocused: FocusState<Bool>.Binding) {
         self.state = state
         self.addressFocused = addressFocused
+        _bookmarks = ObservedObject(wrappedValue: state.bookmarks)
         _downloads = ObservedObject(wrappedValue: state.downloads)
     }
 
@@ -179,13 +181,16 @@ struct AddressBarView: View {
                     .help("填充已保存的账号密码")
                 }
 
-                Button(action: state.toggleFavorite) {
-                    Image(systemName: state.bookmarks.isFavorite(tab.url) ? "star.fill" : "star")
+                Button(action: state.requestBookmarkSave) {
+                    Image(systemName: bookmarks.isFavorite(tab.url) ? "star.fill" : "star")
                         .font(.system(size: 14, weight: .regular))
-                        .foregroundStyle(state.bookmarks.isFavorite(tab.url) ? Color.yellow : Color.secondary)
+                        .foregroundStyle(bookmarks.isFavorite(tab.url) ? Color.yellow : Color.secondary)
                 }
                 .buttonStyle(ToolbarIconButtonStyle(size: 24, cornerRadius: 6))
-                .help("将当前网页加入收藏")
+                .help(bookmarks.isFavorite(tab.url) ? "编辑书签" : "将当前网页加入收藏")
+                .popover(isPresented: $state.isBookmarkSavePopoverPresented, arrowEdge: .top) {
+                    BookmarkSavePopover(state: state, bookmarks: bookmarks)
+                }
             }
         }
         .padding(.horizontal, 13)
@@ -272,6 +277,85 @@ struct AddressBarView: View {
         .font(.system(size: 13.5))
         .lineLimit(1)
         .truncationMode(.tail)
+    }
+}
+
+private struct BookmarkSavePopover: View {
+    @ObservedObject var state: BrowserWindowState
+    @ObservedObject var bookmarks: BookmarkStore
+    @State private var title = ""
+    @State private var destination: BookmarkDestination = .bar
+
+    private var currentURL: URL? { state.selectedTab?.url }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(bookmarks.isFavorite(currentURL) ? "编辑书签" : "添加书签")
+                .font(.system(size: 15, weight: .semibold))
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("名称")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField("书签名称", text: $title)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            HStack(spacing: 10) {
+                Text("位置")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $destination) {
+                    Text("收藏（起始页）").tag(BookmarkDestination.favorites)
+                    Text("书签栏").tag(BookmarkDestination.bar)
+                    if !bookmarks.allFolders.isEmpty {
+                        Divider()
+                        ForEach(bookmarks.allFolders) { folder in
+                            Text(folderLabel(folder)).tag(BookmarkDestination.folder(folder.id))
+                        }
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+            }
+
+            HStack(spacing: 8) {
+                if bookmarks.isFavorite(currentURL) {
+                    Button("移除书签", role: .destructive) {
+                        guard let currentURL else { return }
+                        bookmarks.removeSavedBookmark(for: currentURL)
+                        state.isBookmarkSavePopoverPresented = false
+                    }
+                }
+                Spacer()
+                Button("取消") {
+                    state.isBookmarkSavePopoverPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("完成") {
+                    guard let currentURL else { return }
+                    bookmarks.saveBookmark(title: title, url: currentURL, to: destination)
+                    state.isBookmarkSavePopoverPresented = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(currentURL == nil)
+            }
+        }
+        .padding(16)
+        .frame(width: 340)
+        .onAppear(perform: loadCurrentBookmark)
+    }
+
+    private func loadCurrentBookmark() {
+        guard let currentURL else { return }
+        title = bookmarks.savedTitle(for: currentURL)
+            ?? state.selectedTab?.title
+            ?? URLInput.simplifiedHost(from: currentURL)
+        destination = bookmarks.bookmarkDestination(for: currentURL) ?? .bar
+    }
+
+    private func folderLabel(_ folder: BookmarkItem) -> String {
+        (bookmarks.path(for: folder.id) + [folder.title]).joined(separator: " / ")
     }
 }
 

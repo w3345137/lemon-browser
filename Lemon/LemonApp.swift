@@ -147,7 +147,7 @@ struct BrowserCommands: Commands {
 
         CommandMenu("书签") {
             Button("将当前网页加入收藏") {
-                state?.toggleFavorite()
+                state?.requestBookmarkSave()
             }
             .keyboardShortcut("d", modifiers: .command)
 

@@ -27,6 +27,15 @@ enum TestBookmarkFolderLayout {
         precondition(empty.columnCount == 1)
         precondition(empty.contentSize.height == BookmarkFolderLayout.minimumHeight)
 
+        let overflow = BookmarkFolderLayout(
+            childCount: 6,
+            maximumHeight: 780,
+            fixedChromeHeight: 8,
+            minimumHeight: 46
+        )
+        precondition(overflow.columnCount == 1)
+        precondition(overflow.contentSize.height == 188)
+
         let anchor = CGRect(x: 420, y: 690, width: 80, height: 30)
         let visibleFrame = CGRect(x: 0, y: 40, width: 1280, height: 760)
         let panelFrame = BookmarkFolderPanelGeometry.frame(

@@ -48,6 +48,24 @@ struct TestBookmarkMoves {
         precondition(store.path(for: addedBookmarkID!) == ["Folder", "Nested"])
         precondition(store.children(of: nestedFolderID).map(\.id) == [addedBookmarkID!])
 
+        let savedURL = URL(string: "https://saved.example/article")!
+        store.saveBookmark(title: "Saved", url: savedURL, to: .favorites)
+        precondition(store.bookmarkDestination(for: savedURL) == .favorites)
+        precondition(store.savedTitle(for: savedURL) == "Saved")
+
+        store.saveBookmark(title: "Saved in bar", url: savedURL, to: .bar)
+        precondition(store.bookmarkDestination(for: savedURL) == .bar)
+        precondition(store.favorites.contains(where: { $0.url == savedURL }) == false)
+        precondition(store.allURLItems.filter { $0.url == savedURL }.count == 1)
+
+        store.saveBookmark(title: "Saved in folder", url: savedURL, to: .folder(folder.id))
+        precondition(store.bookmarkDestination(for: savedURL) == .folder(folder.id))
+        precondition(store.savedTitle(for: savedURL) == "Saved in folder")
+        precondition(store.allURLItems.filter { $0.url == savedURL }.count == 1)
+
+        store.removeSavedBookmark(for: savedURL)
+        precondition(store.bookmarkDestination(for: savedURL) == nil)
+
         print("bookmark-move-tests=passed")
     }
 }

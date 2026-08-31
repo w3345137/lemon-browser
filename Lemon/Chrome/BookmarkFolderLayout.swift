@@ -13,11 +13,16 @@ struct BookmarkFolderLayout {
     let columnCount: Int
     let contentSize: CGSize
 
-    init(childCount: Int, maximumHeight: CGFloat) {
-        let safeMaximumHeight = max(Self.minimumHeight, maximumHeight.rounded(.down))
+    init(
+        childCount: Int,
+        maximumHeight: CGFloat,
+        fixedChromeHeight: CGFloat = Self.fixedChromeHeight,
+        minimumHeight: CGFloat = Self.minimumHeight
+    ) {
+        let safeMaximumHeight = max(minimumHeight, maximumHeight.rounded(.down))
         let availableRows = max(
             1,
-            Int(floor((safeMaximumHeight - Self.fixedChromeHeight) / Self.rowStride))
+            Int(floor((safeMaximumHeight - fixedChromeHeight) / Self.rowStride))
         )
         let usesTwoColumns = childCount > availableRows
         let visibleRows = usesTwoColumns ? availableRows : max(0, childCount)
@@ -26,8 +31,8 @@ struct BookmarkFolderLayout {
         let naturalHeight = usesTwoColumns
             ? safeMaximumHeight
             : max(
-                Self.minimumHeight,
-                CGFloat(visibleRows) * Self.rowStride + Self.fixedChromeHeight
+                minimumHeight,
+                CGFloat(visibleRows) * Self.rowStride + fixedChromeHeight
             )
 
         self.maximumHeight = safeMaximumHeight

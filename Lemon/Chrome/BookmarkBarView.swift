@@ -1025,6 +1025,7 @@ private final class BookmarkCellView: NSView {
 struct BookmarkBarView: View {
     @ObservedObject var state: BrowserWindowState
     @ObservedObject private var bookmarks: BookmarkStore
+    @State private var showingOverflow = false
 
     init(state: BrowserWindowState) {
         self.state = state
@@ -1038,12 +1039,8 @@ struct BookmarkBarView: View {
                 NativeBookmarkBar(items: split.visible, state: state, bookmarks: bookmarks)
 
                 if !split.overflow.isEmpty {
-                    Menu {
-                        BookmarkOverflowMenuItems(
-                            items: split.overflow,
-                            state: state,
-                            bookmarks: bookmarks
-                        )
+                    Button {
+                        showingOverflow.toggle()
                     } label: {
                         Image(systemName: "chevron.right.2")
                             .font(.system(size: 11, weight: .semibold))
@@ -1051,9 +1048,17 @@ struct BookmarkBarView: View {
                             .frame(width: 32, height: SafariChrome.bookmarkBarHeight)
                             .contentShape(Rectangle())
                     }
-                    .menuStyle(.borderlessButton)
+                    .buttonStyle(.plain)
                     .fixedSize()
                     .help("更多书签")
+                    .popover(isPresented: $showingOverflow, arrowEdge: .bottom) {
+                        BookmarkOverflowPopover(
+                            itemIDs: split.overflow.map(\.id),
+                            state: state,
+                            bookmarks: bookmarks,
+                            onDismissAll: { showingOverflow = false }
+                        )
+                    }
                 }
 
                 Divider().opacity(0.55)
@@ -1099,51 +1104,67 @@ struct BookmarkBarView: View {
 
 }
 
-private struct BookmarkOverflowMenuItems: View {
-    let items: [BookmarkItem]
+private struct BookmarkOverflowPopover: View {
+    let itemIDs: [BookmarkItem.ID]
     @ObservedObject var state: BrowserWindowState
     @ObservedObject var bookmarks: BookmarkStore
+    let onDismissAll: () -> Void
+    @State private var stableLayout: BookmarkFolderLayout?
 
-    var body: some View {
-        ForEach(items) { item in
-            if item.isFolder {
-                Menu(item.title) {
-                    Button("添加本页到此文件夹") {
-                        state.addCurrentPage(to: item.id)
-                    }
-                    .disabled(state.selectedTab?.url == nil)
-
-                    if !item.children.isEmpty {
-                        Divider()
-                        BookmarkOverflowMenuItems(
-                            items: item.children,
-                            state: state,
-                            bookmarks: bookmarks
-                        )
-                        Divider()
-                        Button("全部在新标签页打开") {
-                            openAll(item.children)
-                        }
-                    }
-
-                    Divider()
-                    Button("编辑…") { state.editBookmark(item) }
-                    Button("移除", role: .destructive) { bookmarks.remove(item.id) }
-                }
-            } else {
-                Button(item.title.isEmpty ? URLInput.simplifiedHost(from: item.url) : item.title) {
-                    state.openBookmark(item)
-                }
-            }
-        }
+    private var items: [BookmarkItem] {
+        itemIDs.compactMap { bookmarks.item(with: $0) }
     }
 
-    private func openAll(_ children: [BookmarkItem]) {
-        for item in children {
-            if item.isFolder {
-                openAll(item.children)
-            } else {
-                state.openBookmark(item)
+    private var layout: BookmarkFolderLayout {
+        stableLayout ?? BookmarkFolderLayout(
+            childCount: items.count,
+            maximumHeight: (NSScreen.main?.visibleFrame.height ?? 720) - 96,
+            fixedChromeHeight: 8,
+            minimumHeight: 46
+        )
+    }
+
+    var body: some View {
+        let columns = layout.split(items)
+        ScrollView {
+            HStack(alignment: .top, spacing: 0) {
+                BookmarkFolderColumn(
+                    items: Array(columns.first),
+                    folderID: nil,
+                    trailingBeforeItemID: columns.second.first?.id,
+                    state: state,
+                    bookmarks: bookmarks,
+                    onDismissAll: onDismissAll,
+                    removeTitle: "从书签栏移除"
+                )
+                .frame(width: BookmarkFolderLayout.columnWidth)
+
+                if layout.columnCount == 2 {
+                    Divider()
+                    BookmarkFolderColumn(
+                        items: Array(columns.second),
+                        folderID: nil,
+                        trailingBeforeItemID: nil,
+                        state: state,
+                        bookmarks: bookmarks,
+                        onDismissAll: onDismissAll,
+                        removeTitle: "从书签栏移除"
+                    )
+                    .frame(width: BookmarkFolderLayout.columnWidth)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .frame(width: layout.contentSize.width, height: layout.contentSize.height)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            if stableLayout == nil {
+                stableLayout = BookmarkFolderLayout(
+                    childCount: items.count,
+                    maximumHeight: (NSScreen.main?.visibleFrame.height ?? 720) - 96,
+                    fixedChromeHeight: 8,
+                    minimumHeight: 46
+                )
             }
         }
     }
@@ -1258,11 +1279,12 @@ private struct BookmarkFolderActionButtonStyle: ButtonStyle {
 
 private struct BookmarkFolderColumn: View {
     let items: [BookmarkItem]
-    let folderID: BookmarkItem.ID
+    let folderID: BookmarkItem.ID?
     let trailingBeforeItemID: BookmarkItem.ID?
     @ObservedObject var state: BrowserWindowState
     @ObservedObject var bookmarks: BookmarkStore
     let onDismissAll: () -> Void
+    var removeTitle = "移除"
 
     var body: some View {
         LazyVStack(spacing: 0) {
@@ -1273,7 +1295,8 @@ private struct BookmarkFolderColumn: View {
                     nextItemID: index + 1 < items.count ? items[index + 1].id : trailingBeforeItemID,
                     state: state,
                     bookmarks: bookmarks,
-                    onDismissAll: onDismissAll
+                    onDismissAll: onDismissAll,
+                    removeTitle: removeTitle
                 )
             }
         }
@@ -1283,11 +1306,12 @@ private struct BookmarkFolderColumn: View {
 
 private struct BookmarkFolderRow: View {
     let item: BookmarkItem
-    let parentFolderID: BookmarkItem.ID
+    let parentFolderID: BookmarkItem.ID?
     let nextItemID: BookmarkItem.ID?
     @ObservedObject var state: BrowserWindowState
     @ObservedObject var bookmarks: BookmarkStore
     let onDismissAll: () -> Void
+    var removeTitle = "移除"
     @State private var favicon: NSImage?
     @State private var showingChildren = false
     @State private var dropTargeted = false
@@ -1411,7 +1435,7 @@ private struct BookmarkFolderRow: View {
                 },
                 onDragPositionChange: { dropPosition = $0 },
                 hoverOpenPositionPredicate: item.isFolder ? { $0 > 0.24 && $0 < 0.76 } : nil,
-                removeTitle: "移除",
+                removeTitle: removeTitle,
                 targeted: $dropTargeted
             )
         }

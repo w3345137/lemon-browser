@@ -26,6 +26,12 @@ struct BookmarkItem: Identifiable, Codable, Hashable {
     ]
 }
 
+enum BookmarkDestination: Hashable {
+    case favorites
+    case bar
+    case folder(BookmarkItem.ID)
+}
+
 @MainActor
 final class BookmarkStore: ObservableObject {
     static let shared = BookmarkStore()
@@ -70,7 +76,54 @@ final class BookmarkStore: ObservableObject {
 
     func isFavorite(_ url: URL?) -> Bool {
         guard let url else { return false }
-        return favorites.contains(where: { $0.url == url })
+        return bookmarkDestination(for: url) != nil
+    }
+
+    func bookmarkDestination(for url: URL) -> BookmarkDestination? {
+        if let item = allURLItems.first(where: { $0.url == url }) {
+            return parentFolderID(of: item.id).map(BookmarkDestination.folder) ?? .bar
+        }
+        return favorites.contains(where: { $0.url == url }) ? .favorites : nil
+    }
+
+    func savedTitle(for url: URL) -> String? {
+        allURLItems.first(where: { $0.url == url })?.title
+            ?? favorites.first(where: { $0.url == url })?.title
+    }
+
+    /// 地址栏星标代表一个明确的保存位置。保存时合并同 URL 的旧副本，
+    /// 避免一个页面同时留在“收藏”、书签栏和多个文件夹中。
+    func saveBookmark(title rawTitle: String, url: URL, to destination: BookmarkDestination) {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        var updatedItems = barItems
+        _ = removeBookmarks(matching: url, from: &updatedItems)
+        var updatedFavorites = favorites.filter { $0.url != url }
+
+        let bookmark = BookmarkItem(title: title, url: url)
+        switch destination {
+        case .favorites:
+            updatedFavorites.insert(bookmark, at: 0)
+        case .bar:
+            updatedItems.append(bookmark)
+        case .folder(let folderID):
+            guard insert(bookmark, in: &updatedItems, folderID: folderID, before: nil) else {
+                return
+            }
+        }
+
+        barItems = updatedItems
+        favorites = updatedFavorites
+        persist()
+    }
+
+    func removeSavedBookmark(for url: URL) {
+        var updatedItems = barItems
+        let removedFromBar = removeBookmarks(matching: url, from: &updatedItems)
+        let updatedFavorites = favorites.filter { $0.url != url }
+        guard removedFromBar || updatedFavorites.count != favorites.count else { return }
+        barItems = updatedItems
+        favorites = updatedFavorites
+        persist()
     }
 
     func addToBar(title: String, url: URL) {
@@ -284,6 +337,17 @@ final class BookmarkStore: ObservableObject {
             }
         }
         return false
+    }
+
+    @discardableResult
+    private func removeBookmarks(matching url: URL, from items: inout [BookmarkItem]) -> Bool {
+        let originalCount = items.count
+        items.removeAll { !$0.isFolder && $0.url == url }
+        var removed = items.count != originalCount
+        for index in items.indices where items[index].isFolder {
+            removed = removeBookmarks(matching: url, from: &items[index].children) || removed
+        }
+        return removed
     }
 
     private func findBookmark(in items: [BookmarkItem], itemID: BookmarkItem.ID) -> BookmarkItem? {

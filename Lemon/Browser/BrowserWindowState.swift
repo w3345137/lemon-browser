@@ -24,6 +24,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     @Published var findQuery = ""
     @Published var sidebarTab: SidebarTab = .bookmarks
     @Published var closedTabs: [ClosedTabSnapshot] = []
+    @Published var isBookmarkSavePopoverPresented = false
     let downloads: DownloadStore
 
     let bookmarks = BookmarkStore.shared
@@ -413,9 +414,9 @@ final class BrowserWindowState: NSObject, ObservableObject {
         select(tabs[index].id)
     }
 
-    func toggleFavorite() {
-        guard let tab = selectedTab, let url = tab.url else { return }
-        bookmarks.toggleFavorite(title: tab.title, url: url)
+    func requestBookmarkSave() {
+        guard selectedTab?.url != nil else { return }
+        isBookmarkSavePopoverPresented = true
     }
 
     func fillCredential(_ credential: WebCredential) {
