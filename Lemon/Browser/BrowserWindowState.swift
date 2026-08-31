@@ -272,8 +272,11 @@ final class BrowserWindowState: NSObject, ObservableObject {
         }
         // 只有被关的是当前标签才需要重新选择；关后台标签不能偷换用户正在看的页面。
         if wasSelected {
-            let next = min(index, tabs.count - 1)
-            select(tabs[next].id)
+            let fallbackIndex = TabCloseSelectionPolicy.fallbackIndex(
+                closedIndex: index,
+                remainingCount: tabs.count
+            )
+            select(tabs[fallbackIndex].id)
         } else {
             persistSession()
         }

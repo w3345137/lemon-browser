@@ -137,6 +137,10 @@ run_test TestTabMemoryPressurePolicy \
   "$project_root/Scripts/TestTabMemoryPressurePolicy.swift" \
   "$project_root/Lemon/Browser/TabMemoryPressurePolicy.swift"
 
+run_test TestTabCloseSelectionPolicy \
+  "$project_root/Scripts/TestTabCloseSelectionPolicy.swift" \
+  "$project_root/Lemon/Browser/TabCloseSelectionPolicy.swift"
+
 run_test TestWebViewStack \
   "$project_root/Scripts/TestWebViewStack.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
