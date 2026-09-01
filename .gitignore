@@ -13,6 +13,8 @@ design-qa.md
 *.log
 *.tmp
 *.swp
+__pycache__/
+*.pyc
 
 .env
 .env.*

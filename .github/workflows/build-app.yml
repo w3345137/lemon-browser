@@ -1,0 +1,70 @@
+name: Build Lemon App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test, build and package universal App
+        env:
+          LEMON_CODESIGN_IDENTITY: "-"
+          LEMON_INSTALL_APP: "0"
+        run: ./Scripts/build-release.sh
+
+      - name: Verify packaged App
+        run: |
+          mkdir extracted
+          ditto -x -k deliverables/release/Lemon-*.zip extracted
+          codesign --verify --deep --strict --verbose=2 extracted/Lemon.app
+          file extracted/Lemon.app/Contents/MacOS/Lemon | grep -q 'universal binary with 2 architectures'
+          (cd deliverables/release && shasum -a 256 -c SHA256SUMS.txt)
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lemon-macOS-universal
+          path: deliverables/release/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" deliverables/release/* --clobber
+          else
+            gh release create "$TAG" deliverables/release/* \
+              --verify-tag \
+              --title "Lemon $TAG" \
+              --notes "Lemon 原生 macOS 通用 App（Apple Silicon + Intel）。本构建由公开源码在 GitHub Actions 生成，采用 ad-hoc 签名，未经 Apple 公证。"
+          fi
+
+      - name: Publish matching Gitee Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ]; then
+            echo "未配置 GITEE_TOKEN，跳过 Gitee Release 同步。"
+            exit 0
+          fi
+          python3 Scripts/publish-gitee-release.py \
+            --owner binbin3344 \
+            --repo lemon-browser \
+            --tag "$TAG" \
+            --title "Lemon $TAG" \
+            --body "与 GitHub Release 相同的 Lemon macOS 通用 App，由公开源码自动构建。" \
+            deliverables/release/*

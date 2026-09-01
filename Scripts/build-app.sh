@@ -6,6 +6,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 derived_data_path="$project_root/build/DerivedData"
 deliverables_path="$project_root/deliverables"
 output_app="$deliverables_path/Lemon.app"
+install_app="${LEMON_INSTALL_APP:-1}"
 
 # 使用本机已有的 Apple Development 身份保持稳定 designated requirement。
 # 临时 ad-hoc 签名会随每次构建改变 cdhash，导致 macOS Keychain 把新版 App
@@ -66,15 +67,19 @@ done
 touch "$output_app"
 "$lsregister" -f -R "$output_app"
 
-applications_app="/Applications/Lemon.app"
-if /usr/bin/ditto "$output_app" "$applications_app"; then
-  /usr/bin/codesign --force --deep --sign "$codesign_identity" --options runtime \
-    --entitlements "$project_root/Lemon/Lemon.entitlements" \
-    "$applications_app" >/dev/null
-  "$lsregister" -f -R "$applications_app"
-  echo "已安装：$applications_app"
+if [ "$install_app" = "1" ]; then
+  applications_app="/Applications/Lemon.app"
+  if /usr/bin/ditto "$output_app" "$applications_app"; then
+    /usr/bin/codesign --force --deep --sign "$codesign_identity" --options runtime \
+      --entitlements "$project_root/Lemon/Lemon.entitlements" \
+      "$applications_app" >/dev/null
+    "$lsregister" -f -R "$applications_app"
+    echo "已安装：$applications_app"
+  else
+    echo "未能写入 /Applications/Lemon.app，系统“默认网页浏览器”列表可能看不到 Lemon。"
+  fi
 else
-  echo "未能写入 /Applications/Lemon.app，系统“默认网页浏览器”列表可能看不到 Lemon。"
+  echo "已跳过安装到 /Applications（LEMON_INSTALL_APP=${install_app}）"
 fi
 
 echo "已生成：$output_app"

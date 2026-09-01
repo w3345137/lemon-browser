@@ -2,6 +2,8 @@
 
 Lemon 是一款原生运行于 macOS 的轻量浏览器。界面由 SwiftUI 与 AppKit 构建，网页渲染完全使用系统 `WKWebView`，不包含 Electron 或 Chromium 内核。
 
+公开仓库：[GitHub](https://github.com/w3345137/lemon-browser) · [Gitee](https://gitee.com/binbin3344/lemon-browser)
+
 项目目标很直接：保留 Safari 级别的系统集成与资源效率，同时提供更接近 Chromium 系浏览器的标签栏、书签栏和日常操作体验。
 
 ![Lemon 图标](Lemon/Assets.xcassets/AppIcon.appiconset/icon_256.png)
@@ -40,31 +42,42 @@ Lemon 只借鉴行业浏览器公开的交互模式与状态机，不复制 Chro
 ## 系统要求
 
 - macOS 14 或更高版本
-- Xcode 16 或更高版本
-- Swift 5
 
 当前工程同时构建 Apple Silicon 与 Intel 架构。
 
-## 构建
+## 下载 App
 
-在 Xcode 中打开：
+GitHub Release 与 Gitee Release 提供同一份 `Lemon-*-macOS-universal.zip`，同时支持 Apple Silicon 和 Intel Mac。发布包由公开源码自动构建，并附带 `SHA256SUMS.txt`。
+
+公开自动构建采用 ad-hoc 签名，尚未经过 Apple 公证。首次启动时可在 Finder 中右键 Lemon，选择“打开”。
+
+## 无需打开 Xcode 的构建方式
+
+### 云端构建
+
+在 GitHub 仓库的 **Actions → Build Lemon App → Run workflow** 中启动构建。完成后可直接下载 `Lemon-macOS-universal`，无需在本机安装或操作 Xcode。Fork 后同样可以运行这套流程。
+
+推送 `v*` 标签时，同一工作流会创建 GitHub Release；维护者配置 Gitee Token 后，还会把完全相同的 ZIP 和 SHA-256 同步到 Gitee Release。
+
+### 本机一键构建
+
+在 macOS 终端运行：
 
 ```bash
-open Lemon.xcodeproj
+./Scripts/build-release.sh
 ```
 
-或生成 Release `.app`：
+脚本会自动完成回归测试、图标生成、`arm64 + x86_64` 通用 App 构建、签名、ZIP 打包和解包验签，输出到：
 
 ```bash
-./Scripts/build-app.sh
+deliverables/release/
 ```
 
-构建脚本会：
+本机构建需要 Apple 的命令行构建工具，但不需要打开 Xcode 工程或进行手工配置。若只需要 `.app` 而不需要 ZIP，可运行：
 
-1. 生成符合 macOS 图标槽位要求的 App Icon；
-2. 构建 `arm64 + x86_64` 通用包；
-3. 优先使用本机可用的 Apple Development 证书签名；
-4. 输出 `deliverables/Lemon.app`，并尝试安装到 `/Applications/Lemon.app`。
+```bash
+LEMON_INSTALL_APP=0 ./Scripts/build-app.sh
+```
 
 可通过环境变量指定签名身份：
 
@@ -72,7 +85,13 @@ open Lemon.xcodeproj
 LEMON_CODESIGN_IDENTITY="证书 SHA-1 或名称" ./Scripts/build-app.sh
 ```
 
-没有开发者证书时，脚本会使用 ad-hoc 签名。公开构建未经 Apple 公证，首次启动可能需要在 Finder 中右键选择“打开”。
+没有开发者证书时，脚本会使用 ad-hoc 签名。
+
+## 开源范围
+
+本仓库包含 Lemon 的完整 macOS 原生壳、浏览器界面、标签与书签状态、WebKit 集成、安全存储、构建脚本和发布工作流。运行 App 不依赖私有二进制壳，也没有将核心功能藏在未公开的前端包中。
+
+`Lemon.xcodeproj` 作为苹果原生工程描述文件一并开源；日常下载和构建流程均通过 Release、GitHub Actions 或命令行脚本完成。
 
 ## 测试
 
