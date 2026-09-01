@@ -58,6 +58,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     private var fullscreenExitObserver: NSKeyValueObservation?
     private var fullscreenExitCompletions: [() -> Void] = []
     private weak var fullscreenExitWebView: WKWebView?
+    private var lastTrustedUserGestureAt: Date?
+    private var lastExternalApplicationOpen: (scheme: String, date: Date)?
 
     weak var windowState: BrowserWindowState?
 
@@ -456,6 +458,11 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
             let proxy = ScriptMessageProxy(tab: self)
             view.configuration.userContentController.add(proxy, name: "lemonHover")
             view.configuration.userContentController.add(proxy, name: CredentialBridge.handlerName)
+            view.configuration.userContentController.add(
+                proxy,
+                contentWorld: .defaultClient,
+                name: "lemonExternalGesture"
+            )
             // 媒体桥横跨两个世界：webAudioScript/tabMuteScript 在页面世界上报，
             // DOM 可闻性脚本在隔离世界上报，handler 必须两边都注册。
             view.configuration.userContentController.add(proxy, name: MediaAudibilityBridge.handlerName)
@@ -514,6 +521,10 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
             webView?.configuration.userContentController.removeScriptMessageHandler(forName: CredentialBridge.handlerName)
             webView?.configuration.userContentController.removeScriptMessageHandler(forName: MediaAudibilityBridge.handlerName)
             webView?.configuration.userContentController.removeScriptMessageHandler(forName: MediaAudibilityBridge.handlerName, contentWorld: .defaultClient)
+            webView?.configuration.userContentController.removeScriptMessageHandler(
+                forName: "lemonExternalGesture",
+                contentWorld: .defaultClient
+            )
         }
         ownsScriptMessageHandlers = false
         if let token = pendingFillToken {
@@ -606,6 +617,16 @@ extension BrowserTab: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+        if let url = navigationAction.request.url,
+           let scheme = ExternalApplicationPolicy.externalScheme(for: url) {
+            openExternalApplicationIfAllowed(
+                url,
+                scheme: scheme,
+                navigationAction: navigationAction,
+                webView: webView
+            )
+            return .cancel
+        }
         if navigationAction.modifierFlags.contains(.command),
            let url = navigationAction.request.url,
            url.scheme != "about" {
@@ -631,6 +652,16 @@ extension BrowserTab: WKNavigationDelegate {
 
 extension BrowserTab: WKUIDelegate {
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = navigationAction.request.url,
+           let scheme = ExternalApplicationPolicy.externalScheme(for: url) {
+            openExternalApplicationIfAllowed(
+                url,
+                scheme: scheme,
+                navigationAction: navigationAction,
+                webView: webView
+            )
+            return nil
+        }
         let host = webView.url?.host ?? navigationAction.request.url?.host ?? ""
         let store = SitePermissionStore.shared
         var choice = store.choice(for: host, kind: .popups)
@@ -732,6 +763,10 @@ private final class ScriptMessageProxy: NSObject, WKScriptMessageHandler {
 
 extension BrowserTab {
     func receiveScriptMessage(_ message: WKScriptMessage) {
+        if message.name == "lemonExternalGesture" {
+            lastTrustedUserGestureAt = Date()
+            return
+        }
         if message.name == "lemonHover" {
             hoveredLink = message.body as? String ?? ""
             return
@@ -772,5 +807,90 @@ extension BrowserTab {
             password: password,
             pageURL: webView?.url
         )
+    }
+}
+
+private extension BrowserTab {
+    func openExternalApplicationIfAllowed(
+        _ url: URL,
+        scheme: String,
+        navigationAction: WKNavigationAction,
+        webView: WKWebView
+    ) {
+        let wasExplicitLink = navigationAction.navigationType == .linkActivated
+        let hasRecentGesture = ExternalApplicationPolicy.isRecentGesture(at: lastTrustedUserGestureAt)
+        guard wasExplicitLink || hasRecentGesture else { return }
+
+        // 一些页面会按顺序试探同一协议的多个 URL，防止短时间内
+        // 重复打开客户端。
+        if let previous = lastExternalApplicationOpen,
+           previous.scheme == scheme,
+           Date().timeIntervalSince(previous.date) < 1.5 {
+            return
+        }
+
+        let sourceHost = navigationAction.sourceFrame.request.url?.host
+            ?? webView.url?.host
+            ?? self.url?.host
+            ?? "当前网站"
+        let store = SitePermissionStore.shared
+        var choice = store.externalApplicationChoice(for: sourceHost, scheme: scheme)
+
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(toOpen: url) else {
+            showMissingExternalApplicationAlert(scheme: scheme)
+            return
+        }
+        let applicationName = applicationDisplayName(at: applicationURL)
+
+        if choice == .ask {
+            let prompt = promptForExternalApplication(
+                sourceHost: sourceHost,
+                applicationName: applicationName,
+                scheme: scheme
+            )
+            choice = prompt.choice
+            if prompt.remember {
+                store.setExternalApplicationChoice(choice, for: sourceHost, scheme: scheme)
+            }
+        }
+        guard choice == .allow else { return }
+
+        lastExternalApplicationOpen = (scheme, Date())
+        NSWorkspace.shared.open(url)
+    }
+
+    func promptForExternalApplication(
+        sourceHost: String,
+        applicationName: String,
+        scheme: String
+    ) -> (choice: SitePermissionChoice, remember: Bool) {
+        let alert = NSAlert()
+        alert.messageText = "允许打开“\(applicationName)”？"
+        alert.informativeText = "\(sourceHost) 正在尝试通过 \(scheme) 链接打开此应用。"
+        alert.addButton(withTitle: "打开 \(applicationName)")
+        alert.addButton(withTitle: "取消")
+        let rememberBox = NSButton(
+            checkboxWithTitle: "一直允许 \(sourceHost) 打开此类链接",
+            target: nil,
+            action: nil
+        )
+        rememberBox.frame = NSRect(x: 0, y: 0, width: 360, height: 20)
+        alert.accessoryView = rememberBox
+        let allowed = alert.runModal() == .alertFirstButtonReturn
+        return (allowed ? .allow : .block, rememberBox.state == .on)
+    }
+
+    func showMissingExternalApplicationAlert(scheme: String) {
+        let alert = NSAlert()
+        alert.messageText = "无法打开链接"
+        alert.informativeText = "Mac 上没有找到可以处理 \(scheme) 链接的应用。"
+        alert.addButton(withTitle: "好")
+        alert.runModal()
+    }
+
+    func applicationDisplayName(at applicationURL: URL) -> String {
+        let bundleName = Bundle(url: applicationURL)?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+        let fallbackName = Bundle(url: applicationURL)?.object(forInfoDictionaryKey: "CFBundleName") as? String
+        return bundleName ?? fallbackName ?? applicationURL.deletingPathExtension().lastPathComponent
     }
 }

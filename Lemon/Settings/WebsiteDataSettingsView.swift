@@ -221,6 +221,38 @@ struct WebsiteDataSettingsView: View {
                                 .frame(height: 38)
                                 if kind != SitePermissionKind.allCases.last { Divider() }
                             }
+                            ForEach(permissions.externalApplicationSchemes(for: selectedHost), id: \.self) { scheme in
+                                Divider()
+                                HStack {
+                                    Label("打开 \(scheme) 链接", systemImage: "arrow.up.forward.app")
+                                    Spacer()
+                                    Picker(
+                                        "",
+                                        selection: Binding(
+                                            get: {
+                                                permissions.externalApplicationChoice(
+                                                    for: selectedHost,
+                                                    scheme: scheme
+                                                )
+                                            },
+                                            set: {
+                                                permissions.setExternalApplicationChoice(
+                                                    $0,
+                                                    for: selectedHost,
+                                                    scheme: scheme
+                                                )
+                                            }
+                                        )
+                                    ) {
+                                        ForEach(SitePermissionChoice.allCases) { choice in
+                                            Text(choice.title).tag(choice)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .frame(width: 110)
+                                }
+                                .frame(height: 38)
+                            }
                         }
                         .padding(.horizontal, 8)
                     }

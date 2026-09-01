@@ -539,6 +539,27 @@ private struct SiteInformationPanel: View {
                     }
                     .frame(height: 34)
                 }
+                ForEach(permissions.externalApplicationSchemes(for: host), id: \.self) { scheme in
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.up.forward.app")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20)
+                        Text("\(scheme) 链接")
+                            .font(.system(size: 12.5))
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { permissions.externalApplicationChoice(for: host, scheme: scheme) },
+                            set: { permissions.setExternalApplicationChoice($0, for: host, scheme: scheme) }
+                        )) {
+                            ForEach(SitePermissionChoice.allCases) { choice in
+                                Text(choice.title).tag(choice)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 92)
+                    }
+                    .frame(height: 34)
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 7)

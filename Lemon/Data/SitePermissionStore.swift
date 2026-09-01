@@ -72,6 +72,27 @@ final class SitePermissionStore: ObservableObject {
         persist()
     }
 
+    func externalApplicationChoice(for host: String, scheme: String) -> SitePermissionChoice {
+        values[externalApplicationKey(host: host, scheme: scheme)] ?? .ask
+    }
+
+    func setExternalApplicationChoice(
+        _ choice: SitePermissionChoice,
+        for host: String,
+        scheme: String
+    ) {
+        values[externalApplicationKey(host: host, scheme: scheme)] = choice
+        persist()
+    }
+
+    func externalApplicationSchemes(for host: String) -> [String] {
+        let prefix = "\(normalized(host)).externalApplication."
+        return values.keys.compactMap { key in
+            guard key.hasPrefix(prefix) else { return nil }
+            return String(key.dropFirst(prefix.count))
+        }.sorted()
+    }
+
     func reset(host: String) {
         let prefix = "\(normalized(host))."
         values = values.filter { !$0.key.hasPrefix(prefix) }
@@ -79,10 +100,7 @@ final class SitePermissionStore: ObservableObject {
     }
 
     var configuredHosts: [String] {
-        Array(Set(values.keys.compactMap { key in
-            SitePermissionKind.allCases.first(where: { key.hasSuffix(".\($0.rawValue)") })
-                .map { String(key.dropLast($0.rawValue.count + 1)) }
-        })).sorted()
+        Array(Set(values.keys.compactMap(hostFromStoredKey))).sorted()
     }
 
     func hasCustomPermissions(for host: String) -> Bool {
@@ -97,6 +115,18 @@ final class SitePermissionStore: ObservableObject {
 
     private func key(host: String, kind: SitePermissionKind) -> String {
         "\(normalized(host)).\(kind.rawValue)"
+    }
+
+    private func externalApplicationKey(host: String, scheme: String) -> String {
+        "\(normalized(host)).externalApplication.\(scheme.lowercased())"
+    }
+
+    private func hostFromStoredKey(_ key: String) -> String? {
+        if let marker = key.range(of: ".externalApplication.") {
+            return String(key[..<marker.lowerBound])
+        }
+        return SitePermissionKind.allCases.first(where: { key.hasSuffix(".\($0.rawValue)") })
+            .map { String(key.dropLast($0.rawValue.count + 1)) }
     }
 
     private func normalized(_ host: String) -> String {

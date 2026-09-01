@@ -35,6 +35,7 @@ TAB_HARNESS=(
   "$project_root/Lemon/Browser/BrowserTab.swift"
   "$project_root/Lemon/Browser/WebKitFactory.swift"
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift"
+  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
 )
 
 # 真机级测试：真实 CredentialBridge / MediaAudibilityBridge / CredentialStore。
@@ -43,6 +44,7 @@ LIVE_HARNESS=(
   "$project_root/Lemon/Browser/BrowserTab.swift"
   "$project_root/Lemon/Browser/WebKitFactory.swift"
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift"
+  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
   "$project_root/Lemon/Security/CredentialBridge.swift"
   "$project_root/Lemon/Security/CredentialStore.swift"
 )
@@ -115,7 +117,8 @@ run_test TestDownloadIntegrity \
   "$project_root/Lemon/Data/DownloadItem.swift" \
   "$project_root/Lemon/Data/DownloadStore.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
-  "$project_root/Lemon/Browser/MediaAudibilityBridge.swift"
+  "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
+  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
 
 run_test TestDownloadStore \
   "$project_root/Scripts/TestDownloadStore.swift" \
@@ -123,7 +126,8 @@ run_test TestDownloadStore \
   "$project_root/Lemon/Data/DownloadItem.swift" \
   "$project_root/Lemon/Data/DownloadStore.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
-  "$project_root/Lemon/Browser/MediaAudibilityBridge.swift"
+  "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
+  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
 
 run_test TestSessionCookieVault \
   "$project_root/Scripts/TestSessionCookieVault.swift" \
@@ -141,10 +145,15 @@ run_test TestTabCloseSelectionPolicy \
   "$project_root/Scripts/TestTabCloseSelectionPolicy.swift" \
   "$project_root/Lemon/Browser/TabCloseSelectionPolicy.swift"
 
+run_test TestExternalApplicationPolicy \
+  "$project_root/Scripts/TestExternalApplicationPolicy.swift" \
+  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
+
 run_test TestWebViewStack \
   "$project_root/Scripts/TestWebViewStack.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
-  "$project_root/Lemon/Browser/MediaAudibilityBridge.swift"
+  "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
+  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
 
 if [ "$failures" -gt 0 ]; then
   echo "测试失败数：$failures"

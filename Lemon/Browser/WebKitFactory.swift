@@ -36,6 +36,7 @@ enum WebKitFactory {
         configuration.userContentController.addUserScript(MediaAudibilityBridge.userScript)
         configuration.userContentController.addUserScript(MediaAudibilityBridge.webAudioScript)
         configuration.userContentController.addUserScript(MediaAudibilityBridge.tabMuteScript)
+        configuration.userContentController.addUserScript(ExternalApplicationPolicy.userGestureScript)
         ContentBlocker.shared.install(on: configuration)
         return configuration
     }

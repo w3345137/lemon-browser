@@ -74,6 +74,8 @@ final class SitePermissionStore {
     static let shared = SitePermissionStore()
     func choice(for host: String, kind: SitePermissionKind) -> SitePermissionChoice { .ask }
     func set(_ choice: SitePermissionChoice, for host: String, kind: SitePermissionKind) {}
+    func externalApplicationChoice(for host: String, scheme: String) -> SitePermissionChoice { .ask }
+    func setExternalApplicationChoice(_ choice: SitePermissionChoice, for host: String, scheme: String) {}
 }
 
 final class HistoryStore {
