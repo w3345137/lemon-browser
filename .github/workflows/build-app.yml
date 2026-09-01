@@ -42,6 +42,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
+          APP_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' deliverables/Lemon.app/Contents/Info.plist)
+          if [ "v$APP_VERSION" != "$TAG" ]; then
+            echo "标签 $TAG 与 App 版本 $APP_VERSION 不一致。"
+            exit 1
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" deliverables/release/* --clobber
           else
