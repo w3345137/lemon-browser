@@ -32,7 +32,9 @@ struct TestDownloadLive {
         }
         let reserved = store.items.first!.fileURL
         try Data("user-created-file".utf8).write(to: reserved)
-        for _ in 0..<200 {
+        // GitHub's shared macOS runners can throttle the local WKDownload
+        // transfer substantially even though the fixture itself is local.
+        for _ in 0..<600 {
             if store.items.first?.state == .completed || store.items.first?.state == .failed { break }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -74,7 +76,7 @@ struct TestDownloadLive {
         precondition(paused.state == .paused && store.canResume(paused), paused.statusText)
         store.retry(paused)
         store.retry(paused) // stale UI snapshot must not launch a duplicate retry
-        for _ in 0..<200 {
+        for _ in 0..<600 {
             if store.items.first?.state == .completed || store.items.first?.state == .failed { break }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
