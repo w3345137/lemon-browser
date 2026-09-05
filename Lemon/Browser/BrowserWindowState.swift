@@ -495,7 +495,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     func clearCurrentWebsiteData() {
-        guard let url = selectedTab?.url, let host = url.host?.lowercased() else { return }
+        guard let targetTab = selectedTab, let url = targetTab.url, let host = url.host?.lowercased() else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "清除 \(host) 的网站数据？"
@@ -541,7 +541,8 @@ final class BrowserWindowState: NSObject, ObservableObject {
                 group.notify(queue: .main) {
                     dataStore.removeData(ofTypes: dataTypes, for: matches) {
                         Task { @MainActor in
-                            self?.selectedTab?.reload()
+                            if !targetTab.isPrivate { SessionCookieVault.shared.flush {} }
+                            targetTab.reload()
                         }
                     }
                 }

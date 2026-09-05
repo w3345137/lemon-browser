@@ -1,5 +1,8 @@
 import AppKit
 import SwiftUI
+import WebKit
+import Security
+import AVFoundation
 
 struct AddressBarView: View {
     @ObservedObject var state: BrowserWindowState
@@ -87,6 +90,8 @@ private struct AddressBarContent: View {
                 }
                 Divider()
                 Button("查找…") { state.toggleFindBar() }
+                Button("开发者工具") { InspectorController.open(tab.webView) }
+                    .disabled(tab.webView == nil)
                 Button("设置…") { openSettings() }
             } label: {
                 Image(systemName: "ellipsis")
@@ -260,7 +265,7 @@ private struct AddressBarContent: View {
             .buttonStyle(ToolbarIconButtonStyle(size: 24, cornerRadius: 6))
             .help("网站信息和权限")
             .popover(isPresented: $showingSiteInfo, arrowEdge: .top) {
-                SiteInformationPanel(state: state)
+                SiteInformationPanel(state: state, tab: tab)
             }
         }
     }
@@ -492,23 +497,42 @@ private enum SiteSecurityBadge {
 
 private struct SiteInformationPanel: View {
     @ObservedObject var state: BrowserWindowState
+    @ObservedObject var tab: BrowserTab
     @ObservedObject private var permissions = SitePermissionStore.shared
+    @ObservedObject private var sessions = SessionCookieVault.shared
+    @Environment(\.openSettings) private var openSettings
+    @State private var cookieCount: Int?
+    @State private var permissionChanged = false
+    @State private var showCertificates = false
+
+    private var certificateNames: [String] {
+        guard let trust = tab.webView?.serverTrust,
+              let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else { return [] }
+        return chain.map { SecCertificateCopySubjectSummary($0) as String? ?? "证书" }
+    }
+
+    private var connectionSummary: String {
+        if tab.url?.scheme == "https", tab.webView?.hasOnlySecureContent == false {
+            return "此页面包含未加密内容"
+        }
+        return SiteSecurityBadge.headlineText(for: tab.url?.scheme)
+    }
 
     private var host: String {
-        state.selectedTab?.url?.host ?? "当前网站"
+        tab.url?.host ?? "当前网站"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 11) {
-                let scheme = state.selectedTab?.url?.scheme?.lowercased()
+                let scheme = tab.url?.scheme?.lowercased()
                 Image(systemName: SiteSecurityBadge.headlineSymbol(for: scheme))
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(SiteSecurityBadge.headlineColor(for: scheme))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(host)
                         .font(.system(size: 14, weight: .semibold))
-                    Text(SiteSecurityBadge.headlineText(for: scheme))
+                    Text(connectionSummary)
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                 }
@@ -516,6 +540,29 @@ private struct SiteInformationPanel: View {
             }
             .padding(14)
 
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                if !certificateNames.isEmpty {
+                    Button("查看证书链…") { showCertificates = true }
+                        .buttonStyle(.link)
+                }
+                Text(cookieCount.map { "此网站可用的 Cookie：\($0) 个" } ?? "正在读取网站数据…")
+                    .foregroundStyle(.secondary)
+                if !tab.isPrivate {
+                    if let error = sessions.storageError {
+                        Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        Button("重试保存登录状态") { sessions.retrySaving() }
+                    } else {
+                        Text(sessions.lastSavedAt.map { "登录会话已保存 · \($0.formatted(date: .omitted, time: .shortened))" } ?? "登录会话将在退出前保存")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("无痕窗口关闭后不保留登录状态").foregroundStyle(.secondary)
+                }
+            }
+            .font(.system(size: 11.5))
+            .padding(14)
             Divider()
 
             VStack(spacing: 2) {
@@ -529,7 +576,7 @@ private struct SiteInformationPanel: View {
                         Spacer()
                         Picker("", selection: Binding(
                             get: { permissions.choice(for: host, kind: kind) },
-                            set: { permissions.set($0, for: host, kind: kind) }
+                            set: { permissions.set($0, for: host, kind: kind); permissionChanged = true }
                         )) {
                             ForEach(SitePermissionChoice.allCases) { choice in
                                 Text(choice.title).tag(choice)
@@ -550,7 +597,7 @@ private struct SiteInformationPanel: View {
                         Spacer()
                         Picker("", selection: Binding(
                             get: { permissions.externalApplicationChoice(for: host, scheme: scheme) },
-                            set: { permissions.setExternalApplicationChoice($0, for: host, scheme: scheme) }
+                            set: { permissions.setExternalApplicationChoice($0, for: host, scheme: scheme); permissionChanged = true }
                         )) {
                             ForEach(SitePermissionChoice.allCases) { choice in
                                 Text(choice.title).tag(choice)
@@ -565,11 +612,25 @@ private struct SiteInformationPanel: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
 
+            if AVCaptureDevice.authorizationStatus(for: .video) == .denied || AVCaptureDevice.authorizationStatus(for: .audio) == .denied {
+                Text("摄像头或麦克风被 macOS 禁止。需在系统设置 → 隐私与安全性中允许 Lemon。")
+                    .font(.system(size: 11)).foregroundStyle(.orange).padding(.horizontal, 14)
+            }
+            if permissionChanged {
+                HStack {
+                    Text("重新载入后应用权限更改").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("重新载入") { tab.reload(); permissionChanged = false }
+                }
+                .font(.system(size: 11)).padding(14)
+            }
+
             Divider()
 
             HStack {
                 Button("重置权限") {
                     permissions.reset(host: host)
+                    permissionChanged = true
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
@@ -583,7 +644,35 @@ private struct SiteInformationPanel: View {
             }
             .font(.system(size: 12))
             .padding(12)
+            Button("所有网站数据与权限…") {
+                SettingsNavigation.shared.selection = .websites
+                openSettings()
+            }
+            .buttonStyle(.link).padding([.horizontal, .bottom], 12)
         }
-        .frame(width: 340)
+        .frame(width: 380)
+        .task(id: tab.url) {
+            cookieCount = nil
+            guard let store = tab.webView?.configuration.websiteDataStore.httpCookieStore,
+                  let pageHost = tab.url?.host?.lowercased() else { return }
+            let cookies = await store.allCookies()
+            guard tab.url?.host?.lowercased() == pageHost else { return }
+            cookieCount = cookies.filter {
+                let domain = $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+                return domain == pageHost || pageHost.hasSuffix("." + domain)
+            }.count
+        }
+        .sheet(isPresented: $showCertificates) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("服务器证书链").font(.headline)
+                Text(host).foregroundStyle(.secondary)
+                ForEach(Array(certificateNames.enumerated()), id: \.offset) { index, name in
+                    Text("\(index + 1). \(name)").textSelection(.enabled)
+                }
+                Text("HTTPS 加密保护传输过程，不代表网站内容可信。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("完成") { showCertificates = false }
+            }.padding(24).frame(minWidth: 380)
+        }
     }
 }

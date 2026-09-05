@@ -58,10 +58,6 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut("t", modifiers: .command)
 
-            Button("重新打开关闭的标签页") {
-                state?.reopenClosedTab()
-            }
-            .keyboardShortcut("e", modifiers: .command)
         }
 
         CommandGroup(after: .newItem) {
@@ -80,8 +76,10 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut("w", modifiers: .command)
 
-            Divider()
+        }
 
+        CommandGroup(after: .windowList) {
+          Menu("切换标签页") {
             Button("切换到第 1 个标签") { state?.selectTab(number: 1) }
                 .keyboardShortcut("1", modifiers: .command)
             Button("切换到第 2 个标签") { state?.selectTab(number: 2) }
@@ -100,6 +98,7 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("8", modifiers: .command)
             Button("切换到最后一个标签") { state?.selectTab(number: 9) }
                 .keyboardShortcut("9", modifiers: .command)
+          }
         }
 
         CommandMenu("历史记录") {
@@ -120,10 +119,11 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut("]", modifiers: .command)
 
-            Button("重新载入此页") {
-                state?.selectedTab?.reload()
+            Button("重新打开关闭的标签页") {
+                state?.reopenClosedTab()
             }
-            .keyboardShortcut("r", modifiers: .command)
+            .keyboardShortcut("e", modifiers: .command)
+            .disabled(state?.closedTabs.isEmpty ?? true)
 
             Divider()
 
@@ -132,32 +132,12 @@ struct BrowserCommands: Commands {
             }
         }
 
-        CommandMenu("下载") {
-            Button("显示下载") {
-                state?.showDownloads()
-            }
-            .keyboardShortcut("j", modifiers: [.command, .shift])
-
-            Button("打开下载文件夹") {
-                if let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first {
-                    NSWorkspace.shared.open(folder)
-                }
-            }
-        }
-
         CommandMenu("书签") {
             Button("将当前网页加入收藏") {
                 state?.requestBookmarkSave()
             }
             .keyboardShortcut("d", modifiers: .command)
-
-            Button("显示/隐藏书签栏") {
-                state?.isBookmarkBarVisible.toggle()
-            }
-            .keyboardShortcut("b", modifiers: [.command, .shift])
-
             Divider()
-
             Button("书签管理器") {
                 SettingsNavigation.shared.selection = .bookmarks
                 openSettings()
@@ -165,15 +145,40 @@ struct BrowserCommands: Commands {
             .keyboardShortcut("b", modifiers: [.command, .option])
         }
 
-        CommandMenu("显示") {
-            Button(NSApp.keyWindow?.styleMask.contains(.fullScreen) == true
-                   ? "退出全屏"
-                   : "进入全屏") {
-                NSApp.keyWindow?.toggleFullScreen(nil)
+        CommandMenu("工具") {
+            Button("下载管理器") { state?.showDownloads() }
+                .keyboardShortcut("j", modifiers: [.command, .shift])
+            Button("打开下载文件夹") {
+                if let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first {
+                    NSWorkspace.shared.open(folder)
+                }
             }
-            .keyboardShortcut("f", modifiers: [.command, .control])
-
             Divider()
+            Button("显示开发者工具") {
+                InspectorController.open(state?.selectedTab?.webView)
+            }
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(state?.selectedTab?.webView == nil)
+            Button("脚本控制台") {
+                InspectorController.open(state?.selectedTab?.webView, console: true)
+            }
+            .keyboardShortcut("j", modifiers: [.command, .option])
+            .disabled(state?.selectedTab?.webView == nil)
+            Button("选择页面元素") {
+                InspectorController.open(state?.selectedTab?.webView)
+                InspectorController.invoke("toggleElementSelection", on: state?.selectedTab?.webView)
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option])
+            .disabled(state?.selectedTab?.webView == nil)
+        }
+
+        CommandGroup(replacing: .toolbar) {
+            Button("重新载入此页") { state?.selectedTab?.reload() }
+                .keyboardShortcut("r", modifiers: .command)
+            Button(state?.isBookmarkBarVisible == true ? "隐藏书签栏" : "显示书签栏") {
+                state?.isBookmarkBarVisible.toggle()
+            }
+            .keyboardShortcut("b", modifiers: [.command, .shift])
 
             Button("显示/隐藏边栏") {
                 state?.isSidebarVisible.toggle()
@@ -196,6 +201,7 @@ struct BrowserCommands: Commands {
             .keyboardShortcut("0", modifiers: .command)
         }
 
+        CommandGroup(replacing: .help) {}
         CommandGroup(after: .textEditing) {
             Button("查找…") {
                 state?.toggleFindBar()

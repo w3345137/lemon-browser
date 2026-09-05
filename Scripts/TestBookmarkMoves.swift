@@ -48,6 +48,18 @@ struct TestBookmarkMoves {
         precondition(store.path(for: addedBookmarkID!) == ["Folder", "Nested"])
         precondition(store.children(of: nestedFolderID).map(\.id) == [addedBookmarkID!])
 
+        // Move a folder containing a bookmark between nested folders, then
+        // back onto the bar. The subtree and persisted order must survive.
+        precondition(store.move(nestedFolderID!, toFolder: childFolder.id, before: nil))
+        precondition(store.path(for: addedBookmarkID!) == ["Folder", "Child", "Nested"])
+        precondition(!store.move(childFolder.id, toFolder: nestedFolderID!, before: nil))
+        precondition(!store.move(nestedFolderID!, toFolder: nestedFolderID!, before: nil))
+        precondition(store.move(nestedFolderID!, toFolder: nil, before: folder.id))
+        precondition(store.children(of: nestedFolderID).map(\.id) == [addedBookmarkID!])
+        let restored = BookmarkStore(storageURL: testRoot.appendingPathComponent("bookmarks.json"))
+        precondition(restored.barItems.map(\.id) == store.barItems.map(\.id))
+        precondition(restored.children(of: nestedFolderID).map(\.id) == [addedBookmarkID!])
+
         let savedURL = URL(string: "https://saved.example/article")!
         store.saveBookmark(title: "Saved", url: savedURL, to: .favorites)
         precondition(store.bookmarkDestination(for: savedURL) == .favorites)

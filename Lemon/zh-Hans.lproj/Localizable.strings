@@ -1,0 +1,2 @@
+/* Declare the app's supported UI language so AppKit/SwiftUI standard menus
+   use their system-provided Chinese translations as well. */

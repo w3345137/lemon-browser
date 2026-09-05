@@ -42,6 +42,9 @@ struct TestSessionCookieVault {
         ])!
         let restoredNonSecure = SessionCookieRecord(cookie: nonSecure)!.cookie!
         precondition(!restoredNonSecure.isSecure)
+        let updated = HTTPCookie(properties: [.name: source.name, .value: "new-session", .domain: source.domain, .path: source.path])!
+        precondition(SessionCookieRecord.missingCookies(backup: [source], current: [updated]).isEmpty)
+        precondition(SessionCookieRecord.missingCookies(backup: [source], current: []).count == 1)
         print("session-cookie-vault-tests=passed")
     }
 }

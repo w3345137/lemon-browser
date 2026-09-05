@@ -59,7 +59,7 @@ enum TestCredentialCapture {
             tab.tearDown()
         }
 
-        // 5. 兜底计时器：纯 XHR 登录（URL 不变）在延迟后仍然提示。
+        // 5. 仅经过时间不能证明登录成功，不得弹出保存提示。
         do {
             let windowState = BrowserWindowState()
             let tab = BrowserTab(isPrivate: false, startURL: pageURL, loadsImmediately: false)
@@ -68,7 +68,7 @@ enum TestCredentialCapture {
             tab.recordCredentialCapture(scope: "https://login.example.com", username: "u5", password: "p5", pageURL: pageURL)
             precondition(windowState.offeredCredentials.isEmpty)
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.6))
-            precondition(windowState.offeredCredentials.count == 1)
+            precondition(windowState.offeredCredentials.isEmpty)
             BrowserTab.credentialCaptureConfirmDelay = 6
             tab.tearDown()
         }

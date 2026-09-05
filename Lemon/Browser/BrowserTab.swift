@@ -259,7 +259,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     private var pendingFillTimeout: DispatchWorkItem?
 
     /// 保存密码提示的延迟确认：捕获到提交后，等“登录可能成功”的信号
-    /// （导航完成且 URL 变化、SPA 路由变化，或 6 秒兜底）再弹保存提示。
+    /// （导航完成且 URL 变化、SPA 路由变化，或验证表单已消失）再弹保存提示。
     /// 同 URL 重载视为登录失败，直接丢弃。
     struct PendingCredentialCapture {
         let scope: String
@@ -269,7 +269,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
     private var pendingCredentialCapture: PendingCredentialCapture?
     private var credentialCaptureWorkItem: DispatchWorkItem?
-    /// 测试可缩短；真实环境给 SPA/XHR 登录 6 秒完成窗口。
+    /// 延迟后检查 SPA 表单是否已消失；经过时间不代表登录成功。
     static var credentialCaptureConfirmDelay: TimeInterval = 6
 
     func fill(_ credential: WebCredential, password: String, completion: @escaping (Bool) -> Void) {
@@ -330,7 +330,19 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         )
         credentialCaptureWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            self?.flushCredentialCapture()
+            guard let self, let view = self.webView else { return }
+            let captured = self.pendingCredentialCapture
+            view.evaluateJavaScript("typeof window.__lemonHasCredentialChallenge === 'function' && !window.__lemonHasCredentialChallenge()") { [weak self, weak view] result, error in
+                DispatchQueue.main.async {
+                    guard let self, let view, self.webView === view,
+                          error == nil, result as? Bool == true,
+                          let pending = self.pendingCredentialCapture,
+                          pending.scope == captured?.scope,
+                          pending.username == captured?.username,
+                          pending.password == captured?.password else { return }
+                    self.flushCredentialCapture()
+                }
+            }
         }
         credentialCaptureWorkItem = workItem
         DispatchQueue.main.asyncAfter(
@@ -463,6 +475,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     private func configure(_ view: WKWebView, registerScriptMessageHandlers: Bool = true) {
+        InspectorController.configure(view)
         view.navigationDelegate = self
         view.uiDelegate = self
         ownsScriptMessageHandlers = registerScriptMessageHandlers

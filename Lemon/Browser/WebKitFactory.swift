@@ -49,9 +49,7 @@ enum WebKitFactory {
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsMagnification = true
         webView.allowsLinkPreview = true
-        if #available(macOS 13.3, *) {
-            webView.isInspectable = true
-        }
+        InspectorController.configure(webView)
         return webView
     }
 }

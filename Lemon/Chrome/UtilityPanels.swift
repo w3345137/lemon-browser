@@ -117,13 +117,17 @@ struct DownloadsPanel: View {
                     .font(.system(size: 12.5))
                     .lineLimit(1)
                 if item.state == .downloading {
-                    ProgressView(value: item.progress)
-                        .progressViewStyle(.linear)
+                    if item.expectedBytes > 0 {
+                        ProgressView(value: item.progress).progressViewStyle(.linear)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
                 }
                 Text(item.statusText)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .help(item.statusText)
             }
 
             Spacer(minLength: 8)
@@ -132,9 +136,9 @@ struct DownloadsPanel: View {
                 Button("暂停") { downloads.pause(item) }
                     .buttonStyle(.borderless)
             } else if item.state == .paused || item.state == .failed {
-                Button("重试") { downloads.retry(item) }
+                Button(downloads.canResume(item) ? "继续" : "重新下载") { downloads.retry(item) }
                     .buttonStyle(.borderless)
-            } else {
+            } else if item.state == .completed {
                 Button("打开") { downloads.open(item) }
                     .buttonStyle(.borderless)
             }
@@ -144,6 +148,7 @@ struct DownloadsPanel: View {
                 Image(systemName: "folder")
             }
             .buttonStyle(.borderless)
+            .disabled(item.state != .completed)
             .help("在 Finder 中显示")
 
             Button {
@@ -154,6 +159,7 @@ struct DownloadsPanel: View {
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
             .help("删除下载记录和本地文件")
+            .disabled(item.state == .pausing || item.state == .verifying)
         }
         .padding(.horizontal, 14)
         .frame(minHeight: 58)
@@ -162,7 +168,10 @@ struct DownloadsPanel: View {
                 Button("打开") { downloads.open(item) }
             }
             if item.state == .paused || item.state == .failed {
-                Button("继续下载") { downloads.retry(item) }
+                if downloads.canResume(item) {
+                    Button("继续下载") { downloads.retry(item) }
+                }
+                Button("重新下载") { downloads.retry(item, allowResume: false) }
             }
             Button("在 Finder 中显示") { downloads.reveal(item) }
             Divider()
@@ -174,6 +183,9 @@ struct DownloadsPanel: View {
 
     private func downloadSymbol(_ state: DownloadState) -> String {
         switch state {
+        case .starting: "network"
+        case .pausing: "pause.circle"
+        case .verifying: "checkmark.shield"
         case .downloading: "arrow.down.circle"
         case .paused: "pause.circle"
         case .completed: "checkmark.circle"
@@ -192,12 +204,14 @@ func confirmAndDeleteDownload(_ item: DownloadItem, from downloads: DownloadStor
     alert.addButton(withTitle: "取消")
     guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-    do {
-        try downloads.delete(item)
-    } catch {
-        let failure = NSAlert(error: error)
-        failure.messageText = "无法删除下载文件"
-        failure.runModal()
+    Task { @MainActor in
+        do {
+            try await downloads.delete(item)
+        } catch {
+            let failure = NSAlert(error: error)
+            failure.messageText = "无法删除下载文件"
+            failure.runModal()
+        }
     }
 }
 

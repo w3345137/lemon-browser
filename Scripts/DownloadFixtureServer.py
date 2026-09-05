@@ -3,9 +3,10 @@
 import http.server
 import socketserver
 import time
+import sys
 
 
-PORT = 18767
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 18767
 CHUNK = b"L" * (64 * 1024)
 CHUNK_COUNT = 256
 FILENAME = "Lemon-download-integrity-fixture.bin"
@@ -17,15 +18,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        self.send_response(200)
+        total = len(CHUNK) * CHUNK_COUNT
+        offset = 0
+        if self.headers.get("Range", "").startswith("bytes="):
+            offset = int(self.headers["Range"][6:].split("-")[0])
+        self.send_response(206 if offset else 200)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Disposition", f'attachment; filename="{FILENAME}"')
-        self.send_header("Content-Length", str(len(CHUNK) * CHUNK_COUNT))
+        self.send_header("Content-Length", str(total - offset))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("ETag", '"lemon-fixture-1"')
+        self.send_header("Last-Modified", "Mon, 01 Jun 2026 00:00:00 GMT")
+        if offset:
+            self.send_header("Content-Range", f"bytes {offset}-{total - 1}/{total}")
         self.end_headers()
 
         try:
-            for _ in range(CHUNK_COUNT):
-                self.wfile.write(CHUNK)
+            for position in range(offset, total, len(CHUNK)):
+                self.wfile.write(CHUNK[:min(len(CHUNK), total - position)])
                 self.wfile.flush()
                 time.sleep(0.03)
         except (BrokenPipeError, ConnectionResetError):

@@ -11,8 +11,8 @@ struct TabStripView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let layout = NSCollectionViewFlowLayout()
         layout.scrollDirection = .horizontal
-        layout.minimumLineSpacing = 2
-        layout.minimumInteritemSpacing = 2
+        layout.minimumLineSpacing = SafariChrome.tabSpacing
+        layout.minimumInteritemSpacing = SafariChrome.tabSpacing
         layout.sectionInset = NSEdgeInsets(top: 4, left: 0, bottom: 0, right: 0)
 
         let collectionView = TabCollectionView()
@@ -116,7 +116,10 @@ struct TabStripView: NSViewRepresentable {
             sizeForItemAt indexPath: IndexPath
         ) -> NSSize {
             guard indexPath.item < tabs.count else { return .zero }
-            return NSSize(width: tabs[indexPath.item].isPinned ? 38 : regularTabWidth(), height: 36)
+            return NSSize(
+                width: tabs[indexPath.item].isPinned ? SafariChrome.pinnedTabWidth : regularTabWidth(),
+                height: 36
+            )
         }
 
         func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
@@ -244,13 +247,16 @@ struct TabStripView: NSViewRepresentable {
         private func regularTabWidth() -> CGFloat {
             let regularCount = max(1, tabs.filter { !$0.isPinned }.count)
             let pinnedCount = tabs.filter(\.isPinned).count
-            let spacing = CGFloat(max(tabs.count - 1, 0)) * 2
+            let spacing = CGFloat(max(tabs.count - 1, 0)) * SafariChrome.tabSpacing
             // 使用 SwiftUI 已分配给标签集合的确定宽度。读取尚在布局中的
             // NSScrollView viewport 会得到上一帧宽度，造成标签视觉宽度和
             // 集合点击区域分离，“+”前出现大块空白。
             // 留出 1 pt 取整余量，避免内容宽度与 viewport 临界相等时
             // AppKit 误判为横向溢出并重新创建滚动条。
-            let available = max(0, layoutWidth - CGFloat(pinnedCount * 38) - spacing - 1)
+            let available = max(
+                0,
+                layoutWidth - CGFloat(pinnedCount) * SafariChrome.pinnedTabWidth - spacing - 1
+            )
             // Chromium 会随标签数量增加逐步压缩宽度；保留足够的图标、标题和关闭按钮空间。
             let adaptiveMinimum: CGFloat = 76
             return min(SafariChrome.tabMaxWidth, max(adaptiveMinimum, available / CGFloat(regularCount)))
@@ -501,7 +507,7 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        iconView.frame = NSRect(x: pinnedState ? 12 : 14, y: 11, width: 14, height: 14)
+        iconView.frame = NSRect(x: pinnedState ? (view.bounds.width - 14) / 2 : 14, y: 11, width: 14, height: 14)
         loadingIndicator.frame = iconView.frame
         closeButton.frame = NSRect(x: view.bounds.width - 28, y: 10, width: 16, height: 16)
         audioButton.frame = NSRect(x: view.bounds.width - 47, y: 10, width: 16, height: 16)
@@ -584,6 +590,7 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
         let changes = {
             let attached = self.selectedState && !self.draggingState
             (self.view as? TabCellView)?.attached = attached
+            (self.view as? TabCellView)?.hovered = self.hovering && !self.selectedState && !self.draggingState
             self.view.layer?.cornerRadius = attached ? 0 : 10
             self.view.layer?.zPosition = attached ? 2 : (self.hovering ? 1 : 0)
             if self.draggingState {
@@ -596,7 +603,7 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
                 self.view.layer?.borderWidth = 0
                 self.view.alphaValue = 1
             } else if self.hovering {
-                self.view.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.065).cgColor
+                self.view.layer?.backgroundColor = NSColor.clear.cgColor
                 self.view.layer?.borderWidth = 0
                 self.view.alphaValue = 1
             } else {
@@ -631,6 +638,7 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
 
 private final class TabCellView: NSView {
     var attached = false { didSet { needsDisplay = true } }
+    var hovered = false { didSet { needsDisplay = true } }
     var onHoverChange: ((Bool) -> Void)?
     private var hoverArea: NSTrackingArea?
 
@@ -638,11 +646,15 @@ private final class TabCellView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        if hovered {
+            NSColor.labelColor.withAlphaComponent(0.065).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 3), xRadius: 8, yRadius: 8).fill()
+        }
         guard attached else { return }
         // Chromium 式轮廓：顶部凸圆角，底部反向外扩，底边贴合工具栏。
         // 路径在 cell 内完成，避免滚动容器裁切两侧圆弧。
         let w = bounds.width, h = bounds.height
-        let foot: CGFloat = 6
+        let foot: CGFloat = 4
         let radius = min(CGFloat(9), (w - 2 * foot) / 2)
         let k: CGFloat = 0.55228475
         let path = NSBezierPath()

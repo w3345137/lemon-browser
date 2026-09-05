@@ -163,14 +163,14 @@ struct BrowserWindowView: View {
     private func tabStripWidth(availableWidth: CGFloat) -> CGFloat {
         let pinnedCount = state.tabs.filter(\.isPinned).count
         let regularCount = state.tabs.count - pinnedCount
-        let itemSpacing = CGFloat(max(state.tabs.count - 1, 0)) * 2
-        let idealWidth = CGFloat(pinnedCount) * 38
+        let itemSpacing = CGFloat(max(state.tabs.count - 1, 0)) * SafariChrome.tabSpacing
+        let idealWidth = CGFloat(pinnedCount) * SafariChrome.pinnedTabWidth
             + CGFloat(regularCount) * SafariChrome.tabMaxWidth
             + itemSpacing
 
         // 预留红黄绿按钮、新建标签按钮、内边距与元素间距。
         let maximumWidth = max(SafariChrome.tabMinWidth, availableWidth - 127)
-        return min(maximumWidth, max(38, idealWidth))
+        return min(maximumWidth, max(SafariChrome.pinnedTabWidth, idealWidth))
     }
 
     private func toolbarButton(

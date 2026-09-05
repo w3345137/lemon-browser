@@ -17,7 +17,8 @@ struct BookmarkFolderLayout {
         childCount: Int,
         maximumHeight: CGFloat,
         fixedChromeHeight: CGFloat = Self.fixedChromeHeight,
-        minimumHeight: CGFloat = Self.minimumHeight
+        minimumHeight: CGFloat = Self.minimumHeight,
+        maximumWidth: CGFloat = .greatestFiniteMagnitude
     ) {
         let safeMaximumHeight = max(minimumHeight, maximumHeight.rounded(.down))
         let availableRows = max(
@@ -26,8 +27,7 @@ struct BookmarkFolderLayout {
         )
         let usesTwoColumns = childCount > availableRows
         let visibleRows = usesTwoColumns ? availableRows : max(0, childCount)
-        // 一旦需要分列，菜单就向下用满可用高度；避免第二列已经出现，底部仍留出
-        // 一截无意义空白，也让两列的滚动与拖放区域保持稳定。
+        // 一列填满可用高度后再向右增加列，每列不超过 availableRows。
         let naturalHeight = usesTwoColumns
             ? safeMaximumHeight
             : max(
@@ -37,34 +37,34 @@ struct BookmarkFolderLayout {
 
         self.maximumHeight = safeMaximumHeight
         self.rowsPerColumn = availableRows
-        self.columnCount = usesTwoColumns ? 2 : 1
+        self.columnCount = max(1, (childCount + availableRows - 1) / availableRows)
         self.contentSize = CGSize(
-            width: usesTwoColumns ? Self.twoColumnWidth : Self.columnWidth,
+            width: min(maximumWidth, CGFloat(columnCount) * Self.columnWidth + CGFloat(columnCount - 1)),
             height: min(safeMaximumHeight, naturalHeight)
         )
     }
 
-    func split<Item>(_ items: [Item]) -> (first: ArraySlice<Item>, second: ArraySlice<Item>) {
-        guard columnCount == 2 else {
-            return (items[...], items[items.endIndex...])
+    func columns<Item>(_ items: [Item]) -> [[Item]] {
+        stride(from: 0, to: items.count, by: rowsPerColumn).map {
+            Array(items[$0..<min($0 + rowsPerColumn, items.count)])
         }
-
-        // 常见情形严格按“第一列填满，再进入第二列”排列。极大文件夹超过
-        // 两列一屏时平分为两条可同步滚动的长列，确保所有项目都可访问。
-        let splitOffset: Int
-        if items.count <= rowsPerColumn * 2 {
-            splitOffset = min(rowsPerColumn, items.count)
-        } else {
-            splitOffset = Int(ceil(Double(items.count) / 2.0))
-        }
-        let splitIndex = items.index(items.startIndex, offsetBy: splitOffset)
-        return (items[..<splitIndex], items[splitIndex...])
     }
 }
 
 struct BookmarkFolderPanelGeometry {
     static let edgeGap: CGFloat = 4
     static let screenMargin: CGFloat = 8
+
+    static func beside(_ anchor: CGRect, contentSize: CGSize, within screen: CGRect) -> CGRect {
+        let width = min(contentSize.width, max(1, screen.width - screenMargin * 2))
+        let height = min(contentSize.height, max(1, screen.height - screenMargin * 2))
+        // No gap: a pointer or drag can cross straight into the child menu.
+        let right = anchor.maxX
+        let preferredX = right + width <= screen.maxX - screenMargin ? right : anchor.minX - width
+        let x = max(screen.minX + screenMargin, min(preferredX, screen.maxX - screenMargin - width))
+        let y = max(screen.minY + screenMargin, min(anchor.maxY - height, screen.maxY - screenMargin - height))
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
 
     static func frame(
         below anchorFrame: CGRect,

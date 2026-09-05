@@ -227,6 +227,29 @@ enum IncomingBrowserURL {
 }
 
 final class LemonAppDelegate: NSObject, NSApplicationDelegate {
+    private var isSavingBeforeQuit = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isSavingBeforeQuit else { return .terminateLater }
+        isSavingBeforeQuit = true
+        DownloadStore.shared.prepareToQuit {
+            SessionCookieVault.shared.flush {
+                self.isSavingBeforeQuit = false
+                if let message = SessionCookieVault.shared.storageError {
+                    let alert = NSAlert()
+                    alert.messageText = "登录状态尚未保存"
+                    alert.informativeText = message
+                    alert.addButton(withTitle: "返回浏览器")
+                    alert.addButton(withTitle: "仍然退出")
+                    sender.reply(toApplicationShouldTerminate: alert.runModal() == .alertSecondButtonReturn)
+                } else {
+                    sender.reply(toApplicationShouldTerminate: true)
+                }
+            }
+        }
+        return .terminateLater
+    }
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(
             self,

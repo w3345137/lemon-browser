@@ -1,7 +1,10 @@
 import Foundation
 
 enum DownloadState: String, Codable {
+    case starting
     case downloading
+    case pausing
+    case verifying
     case paused
     case completed
     case failed
@@ -17,6 +20,9 @@ struct DownloadItem: Identifiable, Codable, Equatable {
     var expectedBytes: Int64
     var errorDescription: String?
     var createdAt: Date
+    var partialURL: URL? = nil
+    var requestMethod: String? = nil
+    var validatesLength: Bool? = nil
 
     var progress: Double {
         guard expectedBytes > 0 else { return state == .completed ? 1 : 0 }
@@ -25,13 +31,16 @@ struct DownloadItem: Identifiable, Codable, Equatable {
 
     var statusText: String {
         switch state {
+        case .starting: return "正在连接…"
+        case .pausing: return "正在暂停…"
+        case .verifying: return "正在校验文件…"
         case .downloading:
             if expectedBytes > 0 {
                 return "\(byteText(receivedBytes)) / \(byteText(expectedBytes))"
             }
             return receivedBytes > 0 ? byteText(receivedBytes) : "正在下载…"
         case .paused:
-            return "已暂停"
+            return errorDescription ?? "已暂停"
         case .completed:
             return "已完成"
         case .failed:
@@ -50,6 +59,8 @@ enum DownloadFileNaming {
         preferredName: String,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) -> URL {
+        let sanitized = (preferredName as NSString).lastPathComponent
+        let preferredName = sanitized.isEmpty || sanitized == "." || sanitized == ".." ? "download" : sanitized
         var candidate = folder.appendingPathComponent(preferredName)
         var index = 1
         let ns = preferredName as NSString

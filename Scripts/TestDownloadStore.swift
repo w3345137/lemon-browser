@@ -14,6 +14,8 @@ struct TestDownloadStore {
         }
         precondition(first.lastPathComponent == "report.pdf")
         precondition(second.lastPathComponent == "report 1.pdf")
+        let safe = DownloadFileNaming.uniqueURL(in: folder, preferredName: "../../outside.pdf") { _ in false }
+        precondition(safe.deletingLastPathComponent() == folder)
 
         let item = DownloadItem(
             id: UUID(),

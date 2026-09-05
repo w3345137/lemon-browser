@@ -29,11 +29,22 @@ enum CredentialBridge {
       return rect.width > 0 && rect.height > 0;
     };
     const seenPasswords = new WeakSet();
+    const isOneTimeCode = (input) => {
+      if (!input) return false;
+      const autocomplete = (input.autocomplete || '').toLowerCase();
+      if (autocomplete.split(/\s+/).includes('one-time-code')) return true;
+      const labels = Array.from(input.labels || []).map(label => label.textContent || '');
+      const labelledBy = (input.getAttribute('aria-labelledby') || '').split(/\s+/)
+        .map(id => document.getElementById(id)?.textContent || '');
+      const hints = [input.name, input.id, input.placeholder, input.getAttribute('aria-label'), ...labels, ...labelledBy]
+        .filter(Boolean).join(' ').toLowerCase();
+      return /captcha|otp|one.?time|verification.?code|verify.?code|validate.?code|valid.?code|check.?code|sms.?code|auth.?code|security.?code|dynamic.?password|验证码|校验码|短信码|动态密码|动态口令|一次性密码/.test(hints);
+    };
     const markPassword = (input) => {
       if (input && input.type === 'password') seenPasswords.add(input);
     };
     const isPassword = (input) => {
-      if (!input) return false;
+      if (!input || isOneTimeCode(input)) return false;
       markPassword(input);
       if (input.type === 'password' || seenPasswords.has(input)) return true;
       const autocomplete = (input.autocomplete || '').toLowerCase();
@@ -42,7 +53,7 @@ enum CredentialBridge {
     // 用户名字段打分：autocomplete 语义最强，type=email/tel 次之，
     // name/id/placeholder 关键词再次，裸文本框仅作最后兜底。
     const usernameScore = (input, passwordInput) => {
-      if (!input || input === passwordInput || isPassword(input)) return 0;
+      if (!input || input === passwordInput || isPassword(input) || isOneTimeCode(input)) return 0;
       const type = (input.type || 'text').toLowerCase();
       if (!['text', 'email', 'tel', 'url', 'search', 'number', ''].includes(type)) return 0;
       const autocomplete = (input.autocomplete || '').toLowerCase();
@@ -180,6 +191,8 @@ enum CredentialBridge {
           };
 
           let lastSent = '';
+          window.__lemonHasCredentialChallenge = () => collectInputs(document)
+            .some(input => isPassword(input) || isOneTimeCode(input));
           const capture = (root, reason) => {
             const scope = root || document;
             const inputs = collectInputs(scope);
@@ -213,9 +226,10 @@ enum CredentialBridge {
               element.getAttribute('aria-label'),
               element.className
             ].filter(Boolean).join(' ').toLowerCase();
+            if (/captcha|send.?code|resend|验证码|校验码|获取短信|发送短信|换一张|刷新验证|忘记密码|显示密码/.test(text)) return false;
             if (/login|signin|sign-in|submit|continue|next|登|登陆|登录|提交|确定|下一步/.test(text)) return true;
-            if (element.closest('form') && element.matches('button, input[type="submit"], [role="button"]')) return true;
-            return !!document.querySelector('input[type="password"]') && element.matches('button, input[type="submit"], [role="button"]');
+            return element.matches('input[type="submit"], input[type="image"]')
+              || (element.tagName === 'BUTTON' && !!element.closest('form') && (type === '' || type === 'submit'));
           };
 
           document.addEventListener('submit', (event) => capture(event.target || document, 'submit'), true);
@@ -230,7 +244,6 @@ enum CredentialBridge {
             if (!(event.target instanceof HTMLInputElement)) return;
             setTimeout(() => capture(event.target.form || document, 'enter'), 0);
           }, true);
-          window.addEventListener('pagehide', () => capture(document, 'pagehide'));
 
           // 填充入口：主框架可同步直调；跨域 iframe 由主框架 postMessage 到达。
           // 回执经 messageHandlers 返回，App 侧据此判断填充是否真正落地。

@@ -14,14 +14,18 @@ enum TestBookmarkFolderLayout {
         precondition(compactScreen.columnCount == 2)
         precondition(compactScreen.contentSize.width == 689)
         precondition(compactScreen.contentSize.height == 372)
-        let compactSplit = compactScreen.split(Array(0..<18))
-        precondition(Array(compactSplit.first) == Array(0..<10))
-        precondition(Array(compactSplit.second) == Array(10..<18))
+        let compactSplit = compactScreen.columns(Array(0..<18))
+        precondition(compactSplit[0] == Array(0..<10))
+        precondition(compactSplit[1] == Array(10..<18))
 
         let veryLarge = BookmarkFolderLayout(childCount: 50, maximumHeight: 372)
-        let largeSplit = veryLarge.split(Array(0..<50))
-        precondition(largeSplit.first.count == 25)
-        precondition(largeSplit.second.count == 25)
+        let largeSplit = veryLarge.columns(Array(0..<50))
+        precondition(veryLarge.columnCount == 5)
+        precondition(largeSplit.allSatisfy { $0.count == 10 })
+        precondition(largeSplit.flatMap { $0 } == Array(0..<50))
+        precondition(veryLarge.contentSize.width == 1724)
+        let uneven = veryLarge.columns(Array(0..<53))
+        precondition(uneven.count == 6 && uneven.last?.count == 3)
 
         let empty = BookmarkFolderLayout(childCount: 0, maximumHeight: 780)
         precondition(empty.columnCount == 1)
@@ -46,6 +50,19 @@ enum TestBookmarkFolderLayout {
         precondition(panelFrame.maxY == anchor.minY - BookmarkFolderPanelGeometry.edgeGap)
         precondition(panelFrame.minY >= visibleFrame.minY + BookmarkFolderPanelGeometry.screenMargin)
         precondition(panelFrame.maxX <= visibleFrame.maxX - BookmarkFolderPanelGeometry.screenMargin)
+
+        let child = BookmarkFolderPanelGeometry.beside(
+            anchor, contentSize: CGSize(width: 344, height: 600), within: visibleFrame)
+        precondition(child.minX == anchor.maxX)
+        precondition(child.maxY == anchor.maxY)
+        let rightEdge = CGRect(x: 1100, y: 100, width: 160, height: 30)
+        let fallback = BookmarkFolderPanelGeometry.beside(
+            rightEdge, contentSize: CGSize(width: 344, height: 600), within: visibleFrame)
+        precondition(fallback.maxX == rightEdge.minX)
+        precondition(fallback.minY >= visibleFrame.minY + 8)
+        let huge = BookmarkFolderPanelGeometry.beside(
+            anchor, contentSize: CGSize(width: 3000, height: 2000), within: visibleFrame)
+        precondition(visibleFrame.contains(huge))
 
         print("Bookmark folder layout tests passed")
     }

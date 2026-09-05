@@ -50,6 +50,7 @@ private struct BookmarkNativeDragSurface: NSViewRepresentable {
 }
 
 private final class BookmarkDragNSView: NSView, NSDraggingSource {
+    override var mouseDownCanMoveWindow: Bool { false }
     var itemID: BookmarkItem.ID?
     var onClick: (() -> Void)?
     var onDrop: ((BookmarkItem.ID) -> Bool)?
@@ -90,7 +91,7 @@ private final class BookmarkDragNSView: NSView, NSDraggingSource {
         if let trackingAreaRef { removeTrackingArea(trackingAreaRef) }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect],
+            options: [.activeInActiveApp, .mouseEnteredAndExited, .inVisibleRect],
             owner: self,
             userInfo: nil
         )
@@ -127,6 +128,8 @@ private final class BookmarkDragNSView: NSView, NSDraggingSource {
         guard hypot(current.x - origin.x, current.y - origin.y) >= 3 else { return }
 
         startedDragging = true
+        pointerHoverOpenWorkItem?.cancel()
+        pointerHoverOpenWorkItem = nil
         onPressChange?(false)
         let pasteboardItem = NSPasteboardItem()
         pasteboardItem.setString(itemID.uuidString, forType: .lemonNativeBookmark)
@@ -224,12 +227,17 @@ private final class BookmarkDragNSView: NSView, NSDraggingSource {
         onTargeted?(targeted)
         let position = sender.map(relativeVerticalPosition(from:))
         onDragPositionChange?(targeted ? position : nil)
-        dragHoverOpenWorkItem?.cancel()
-        dragHoverOpenWorkItem = nil
         guard targeted,
               let position,
               let onHoverOpen,
-              hoverOpenPositionPredicate?(position) ?? true else { return }
+              hoverOpenPositionPredicate?(position) ?? true else {
+            dragHoverOpenWorkItem?.cancel()
+            dragHoverOpenWorkItem = nil
+            return
+        }
+        // draggingUpdated fires continuously; restarting this timer there
+        // prevented spring-loading while the pointer was moving.
+        guard dragHoverOpenWorkItem == nil else { return }
         let workItem = DispatchWorkItem { onHoverOpen() }
         dragHoverOpenWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: workItem)
@@ -272,12 +280,14 @@ private final class BookmarkFolderPanel: NSPanel {
 
 @MainActor
 private final class BookmarkFolderPanelController: NSObject {
+    private static let didCloseMenu = Notification.Name("LemonBookmarkMenuDidClose")
     private let panel: BookmarkFolderPanel
     private let contentSize: NSSize
     private weak var parentWindow: NSWindow?
     private weak var anchorView: NSView?
     private var eventMonitor: Any?
     private var resignObserver: NSObjectProtocol?
+    private var parentCloseObserver: NSObjectProtocol?
     private var isClosing = false
     var onClose: (() -> Void)?
 
@@ -313,6 +323,14 @@ private final class BookmarkFolderPanelController: NSObject {
     }
 
     func show(below anchor: NSView) {
+        show(anchor: anchor, beside: false)
+    }
+
+    func show(beside anchor: NSView) {
+        show(anchor: anchor, beside: true)
+    }
+
+    private func show(anchor: NSView, beside: Bool) {
         guard let parentWindow = anchor.window else { return }
         self.parentWindow = parentWindow
         anchorView = anchor
@@ -320,7 +338,9 @@ private final class BookmarkFolderPanelController: NSObject {
         let anchorInWindow = anchor.convert(anchor.bounds, to: nil)
         let anchorOnScreen = parentWindow.convertToScreen(anchorInWindow)
         let visibleFrame = parentWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-        let frame = BookmarkFolderPanelGeometry.frame(
+        let frame = beside ? BookmarkFolderPanelGeometry.beside(
+            anchorOnScreen, contentSize: contentSize, within: visibleFrame
+        ) : BookmarkFolderPanelGeometry.frame(
             below: anchorOnScreen,
             contentSize: contentSize,
             within: visibleFrame
@@ -329,11 +349,18 @@ private final class BookmarkFolderPanelController: NSObject {
         parentWindow.addChildWindow(panel, ordered: .above)
         panel.orderFront(nil)
         installObservers()
+        parentCloseObserver = NotificationCenter.default.addObserver(
+            forName: Self.didCloseMenu,
+            object: parentWindow, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.close() }
+        }
     }
 
     func close() {
         guard !isClosing else { return }
         isClosing = true
+        NotificationCenter.default.post(name: Self.didCloseMenu, object: panel)
         removeObservers()
         if let parentWindow {
             parentWindow.removeChildWindow(panel)
@@ -373,6 +400,10 @@ private final class BookmarkFolderPanelController: NSObject {
     }
 
     private func removeObservers() {
+        if let parentCloseObserver {
+            NotificationCenter.default.removeObserver(parentCloseObserver)
+            self.parentCloseObserver = nil
+        }
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
             self.eventMonitor = nil
@@ -381,6 +412,62 @@ private final class BookmarkFolderPanelController: NSObject {
             NotificationCenter.default.removeObserver(resignObserver)
             self.resignObserver = nil
         }
+    }
+}
+
+// Unlike NSPopover, these panels do not dismiss when a native drag begins.
+// They share the top-level menu's positioning and lifetime rules.
+private struct BookmarkSubmenuAnchor: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    let folderID: BookmarkItem.ID
+    let state: BrowserWindowState
+    let bookmarks: BookmarkStore
+    let onDismissAll: () -> Void
+
+    final class AnchorView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    final class Coordinator {
+        var panel: BookmarkFolderPanelController?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> AnchorView { AnchorView() }
+
+    func updateNSView(_ view: AnchorView, context: Context) {
+        let coordinator = context.coordinator
+        guard isPresented else {
+            coordinator.panel?.close()
+            coordinator.panel = nil
+            return
+        }
+        guard coordinator.panel == nil else { return }
+        DispatchQueue.main.async {
+            guard isPresented, view.window != nil, coordinator.panel == nil else { return }
+            let screen = view.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+            let layout = BookmarkFolderLayout(
+                childCount: bookmarks.item(with: folderID)?.children.count ?? 0,
+                maximumHeight: screen.height - BookmarkFolderPanelGeometry.screenMargin * 2,
+                maximumWidth: screen.width - BookmarkFolderPanelGeometry.screenMargin * 2
+            )
+            let controller = NSHostingController(rootView: BookmarkFolderPopover(
+                folderID: folderID, state: state, bookmarks: bookmarks,
+                preferredLayout: layout, onDismissAll: onDismissAll
+            ))
+            let panel = BookmarkFolderPanelController(contentViewController: controller, contentSize: layout.contentSize)
+            panel.onClose = { [weak coordinator] in
+                coordinator?.panel = nil
+                DispatchQueue.main.async { isPresented = false }
+            }
+            coordinator.panel = panel
+            panel.show(beside: view)
+        }
+    }
+
+    static func dismantleNSView(_ view: AnchorView, coordinator: Coordinator) {
+        coordinator.panel?.close()
+        coordinator.panel = nil
     }
 }
 
@@ -683,7 +770,8 @@ private struct NativeBookmarkBar: NSViewRepresentable {
             if folderPanel?.isShown == true, hoveredFolderID == item.id { return }
             let layout = BookmarkFolderLayout(
                 childCount: item.children.count,
-                maximumHeight: availableFolderHeight(below: anchor)
+                maximumHeight: availableFolderHeight(below: anchor),
+                maximumWidth: (anchor.window?.screen?.visibleFrame.width ?? 1280) - 16
             )
             let contentSize = NSSize(width: layout.contentSize.width, height: layout.contentSize.height)
             let hostingController = NSHostingController(
@@ -1125,37 +1213,10 @@ private struct BookmarkOverflowPopover: View {
     }
 
     var body: some View {
-        let columns = layout.split(items)
-        ScrollView {
-            HStack(alignment: .top, spacing: 0) {
-                BookmarkFolderColumn(
-                    items: Array(columns.first),
-                    folderID: nil,
-                    trailingBeforeItemID: columns.second.first?.id,
-                    state: state,
-                    bookmarks: bookmarks,
-                    onDismissAll: onDismissAll,
-                    removeTitle: "从书签栏移除"
-                )
-                .frame(width: BookmarkFolderLayout.columnWidth)
-
-                if layout.columnCount == 2 {
-                    Divider()
-                    BookmarkFolderColumn(
-                        items: Array(columns.second),
-                        folderID: nil,
-                        trailingBeforeItemID: nil,
-                        state: state,
-                        bookmarks: bookmarks,
-                        onDismissAll: onDismissAll,
-                        removeTitle: "从书签栏移除"
-                    )
-                    .frame(width: BookmarkFolderLayout.columnWidth)
-                }
-            }
-            .padding(.vertical, 4)
-        }
-        .frame(width: layout.contentSize.width, height: layout.contentSize.height)
+        BookmarkFolderColumns(items: items, folderID: nil, layout: layout,
+                              state: state, bookmarks: bookmarks, onDismissAll: onDismissAll,
+                              removeTitle: "从书签栏移除")
+        .frame(width: menuWidth, height: layout.contentSize.height)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             if stableLayout == nil {
@@ -1167,6 +1228,10 @@ private struct BookmarkOverflowPopover: View {
                 )
             }
         }
+    }
+
+    private var menuWidth: CGFloat {
+        min(layout.contentSize.width, (NSScreen.main?.visibleFrame.width ?? 1280) - 16)
     }
 }
 
@@ -1221,39 +1286,14 @@ private struct BookmarkFolderPopover: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let folder {
-                let columns = layout.split(folder.children)
-                ScrollView {
-                    HStack(alignment: .top, spacing: 0) {
-                        BookmarkFolderColumn(
-                            items: Array(columns.first),
-                            folderID: folderID,
-                            trailingBeforeItemID: columns.second.first?.id,
-                            state: state,
-                            bookmarks: bookmarks,
-                            onDismissAll: onDismissAll
-                        )
-                        .frame(width: BookmarkFolderLayout.columnWidth)
-
-                        if layout.columnCount == 2 {
-                            Divider()
-                            BookmarkFolderColumn(
-                                items: Array(columns.second),
-                                folderID: folderID,
-                                trailingBeforeItemID: nil,
-                                state: state,
-                                bookmarks: bookmarks,
-                                onDismissAll: onDismissAll
-                            )
-                            .frame(width: BookmarkFolderLayout.columnWidth)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
+                BookmarkFolderColumns(items: folder.children, folderID: folderID, layout: layout,
+                                      state: state, bookmarks: bookmarks, onDismissAll: onDismissAll)
                 .frame(maxHeight: .infinity)
             }
         }
         // 打开后锁定尺寸。添加书签刷新 children 时，弹层不会重新定位或横向平移。
-        .frame(width: layout.contentSize.width, height: layout.contentSize.height)
+        .frame(width: preferredLayout?.contentSize.width ?? min(layout.contentSize.width, (NSScreen.main?.visibleFrame.width ?? 1280) - 16),
+               height: layout.contentSize.height)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             if stableLayout == nil {
@@ -1263,6 +1303,39 @@ private struct BookmarkFolderPopover: View {
                 )
             }
         }
+    }
+}
+
+private struct BookmarkFolderColumns: View {
+    let items: [BookmarkItem]
+    let folderID: BookmarkItem.ID?
+    let layout: BookmarkFolderLayout
+    @ObservedObject var state: BrowserWindowState
+    @ObservedObject var bookmarks: BookmarkStore
+    let onDismissAll: () -> Void
+    var removeTitle = "移除"
+    @State private var expandedFolderID: BookmarkItem.ID?
+
+    var body: some View {
+        let columns = layout.columns(items)
+        // Height is bounded by rowsPerColumn. Only extra columns can scroll.
+        ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(columns.indices, id: \.self) { index in
+                    if index > 0 { Divider() }
+                    BookmarkFolderColumn(
+                        items: columns[index], folderID: folderID,
+                        trailingBeforeItemID: index + 1 < columns.count ? columns[index + 1].first?.id : nil,
+                        state: state, bookmarks: bookmarks, onDismissAll: onDismissAll,
+                        expandedFolderID: $expandedFolderID,
+                        removeTitle: removeTitle
+                    )
+                    .frame(width: BookmarkFolderLayout.columnWidth)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .scrollIndicators(.hidden)
     }
 }
 
@@ -1284,10 +1357,11 @@ private struct BookmarkFolderColumn: View {
     @ObservedObject var state: BrowserWindowState
     @ObservedObject var bookmarks: BookmarkStore
     let onDismissAll: () -> Void
+    @Binding var expandedFolderID: BookmarkItem.ID?
     var removeTitle = "移除"
 
     var body: some View {
-        LazyVStack(spacing: 0) {
+        VStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, child in
                 BookmarkFolderRow(
                     item: child,
@@ -1296,7 +1370,14 @@ private struct BookmarkFolderColumn: View {
                     state: state,
                     bookmarks: bookmarks,
                     onDismissAll: onDismissAll,
-                    removeTitle: removeTitle
+                    removeTitle: removeTitle,
+                    showingChildren: Binding(
+                        get: { expandedFolderID == child.id },
+                        set: { open in
+                            if open { expandedFolderID = child.id }
+                            else if expandedFolderID == child.id { expandedFolderID = nil }
+                        }
+                    )
                 )
             }
         }
@@ -1313,7 +1394,7 @@ private struct BookmarkFolderRow: View {
     let onDismissAll: () -> Void
     var removeTitle = "移除"
     @State private var favicon: NSImage?
-    @State private var showingChildren = false
+    @Binding var showingChildren: Bool
     @State private var dropTargeted = false
     @State private var hovering = false
     @State private var pressing = false
@@ -1418,7 +1499,6 @@ private struct BookmarkFolderRow: View {
                 },
                 onDelete: {
                     bookmarks.remove(item.id)
-                    onDismissAll()
                 },
                 onHoverOpen: item.isFolder ? { showingChildren = true } : nil,
                 onHoverChange: { hovering = $0 },
@@ -1439,15 +1519,9 @@ private struct BookmarkFolderRow: View {
                 targeted: $dropTargeted
             )
         }
-        .popover(isPresented: $showingChildren, arrowEdge: .leading) {
-            if item.isFolder {
-                BookmarkFolderPopover(
-                    folderID: item.id,
-                    state: state,
-                    bookmarks: bookmarks,
-                    onDismissAll: onDismissAll
-                )
-            }
+        .background {
+            BookmarkSubmenuAnchor(isPresented: $showingChildren, folderID: item.id,
+                                  state: state, bookmarks: bookmarks, onDismissAll: onDismissAll)
         }
         .contextMenu {
             if !item.isFolder {
@@ -1460,7 +1534,6 @@ private struct BookmarkFolderRow: View {
             Divider()
             Button("移除", role: .destructive) {
                 bookmarks.remove(item.id)
-                onDismissAll()
             }
         }
         .onAppear {
