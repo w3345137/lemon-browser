@@ -2,6 +2,18 @@ import AppKit
 import SwiftUI
 
 struct AddressBarView: View {
+    @ObservedObject var state: BrowserWindowState
+    var addressFocused: FocusState<Bool>.Binding
+
+    var body: some View {
+        if let tab = state.selectedTab {
+            AddressBarContent(state: state, tab: tab, addressFocused: addressFocused)
+        }
+    }
+}
+
+private struct AddressBarContent: View {
+    @ObservedObject var tab: BrowserTab
     @Environment(\.openSettings) private var openSettings
     @ObservedObject var state: BrowserWindowState
     @ObservedObject private var bookmarks: BookmarkStore
@@ -11,9 +23,11 @@ struct AddressBarView: View {
     @State private var showingHistory = false
     @State private var showingDownloads = false
     @State private var showingSiteInfo = false
+    @State private var lastReloadClick = Date.distantPast
 
-    init(state: BrowserWindowState, addressFocused: FocusState<Bool>.Binding) {
+    init(state: BrowserWindowState, tab: BrowserTab, addressFocused: FocusState<Bool>.Binding) {
         self.state = state
+        self.tab = tab
         self.addressFocused = addressFocused
         _bookmarks = ObservedObject(wrappedValue: state.bookmarks)
         _downloads = ObservedObject(wrappedValue: state.downloads)
@@ -84,6 +98,7 @@ struct AddressBarView: View {
             .help("设置及更多")
         }
         .padding(.horizontal, 12)
+        .onChange(of: tab.id) { _, _ in lastReloadClick = .distantPast }
     }
 
     private func navigationButton(
@@ -106,23 +121,22 @@ struct AddressBarView: View {
     }
 
     private var reloadButton: some View {
-        let loading = state.selectedTab?.isLoading ?? false
+        let loading = tab.isLoading
         return Button {
-            state.selectedTab?.reload()
+            // Avoid turning the second click of a reload double-click into Stop.
+            guard Date().timeIntervalSince(lastReloadClick) >= NSEvent.doubleClickInterval else { return }
+            lastReloadClick = Date()
+            if loading { tab.stopLoading() } else { tab.reload() }
         } label: {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !loading)) { context in
-                let cycle = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: 0.85) / 0.85
-                Image(systemName: "arrow.clockwise")
+                Image(systemName: loading ? "xmark" : "arrow.clockwise")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Color.primary.opacity(0.78))
-                    .rotationEffect(.degrees(loading ? cycle * 360 : 0))
                     .frame(width: 30, height: 30)
                     .contentShape(Circle())
-            }
         }
         .buttonStyle(ToolbarIconButtonStyle())
         .help(loading ? "停止载入" : "重新载入")
+        .accessibilityLabel(loading ? "停止载入" : "重新载入")
     }
 
     private func utilityButton(
@@ -223,20 +237,7 @@ struct AddressBarView: View {
     }
 
     private var pillBackground: some View {
-        ZStack {
-            Capsule().fill(Color(nsColor: .textBackgroundColor).opacity(0.94))
-            if state.selectedTab?.isLoading == true,
-               let progress = state.selectedTab?.estimatedProgress,
-               progress > 0,
-               progress < 1 {
-                GeometryReader { geo in
-                    Capsule()
-                        .fill(Color.accentColor.opacity(0.13))
-                        .frame(width: geo.size.width * progress)
-                }
-                .clipShape(Capsule())
-            }
-        }
+        Capsule().fill(Color(nsColor: .textBackgroundColor).opacity(0.94))
     }
 
     @ViewBuilder

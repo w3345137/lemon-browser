@@ -54,7 +54,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     private(set) var webView: WKWebView?
-    private var progressObserver: NSKeyValueObservation?
+    private var loadingObserver: NSKeyValueObservation?
+    private var loadingWasStopped = false
     private var titleObserver: NSKeyValueObservation?
     private var urlObserver: NSKeyValueObservation?
     private var lastOfferedCredential: (scope: String, username: String, password: String)?
@@ -101,12 +102,6 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         // webView.reload() 会让 WebKit 重新拉起 WebContent 进程。
         let wasCrashed = webContentDidCrash
         webContentDidCrash = false
-        if isLoading {
-            webView?.stopLoading()
-            isLoading = false
-            estimatedProgress = 0
-            return
-        }
         // 崩溃后 WebKit 可能已把 webView.url 清空，此时 reload() 是空操作；
         // 用 tab 记住的 URL 重新加载（Chromium 对崩溃后台标签也是这个语义）。
         if wasCrashed, webView?.url == nil, let remembered = url {
@@ -114,6 +109,13 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
             return
         }
         webView?.reload()
+    }
+
+    func stopLoading() {
+        loadingWasStopped = true
+        webView?.stopLoading()
+        isLoading = false
+        estimatedProgress = 0
     }
 
     /// 页面侧媒体桥（MediaAudibilityBridge）上报的“可闻”状态。
@@ -486,11 +488,12 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
             )
         }
 
-        progressObserver = view.observe(\.estimatedProgress, options: [.new]) { [weak self] webView, _ in
+        loadingObserver = view.observe(\.isLoading, options: [.initial, .new]) { [weak self] webView, _ in
             DispatchQueue.main.async {
-                self?.estimatedProgress = webView.isLoading && webView.estimatedProgress < 1
-                    ? webView.estimatedProgress
-                    : 0
+                guard let self, self.webView === webView else { return }
+                // Read current engine state: a superseded navigation's cancellation
+                // must not stop the indicator for the next navigation.
+                self.syncNavigationState()
             }
         }
         titleObserver = view.observe(\.title, options: [.new]) { [weak self] webView, _ in
@@ -554,7 +557,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         pendingCredentialCapture = nil
         credentialCaptureWorkItem?.cancel()
         credentialCaptureWorkItem = nil
-        progressObserver = nil
+        loadingObserver = nil
         titleObserver = nil
         urlObserver = nil
         webView = nil
@@ -570,7 +573,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     private func syncNavigationState() {
         canGoBack = webView?.canGoBack ?? false
         canGoForward = webView?.canGoForward ?? false
-        isLoading = webView?.isLoading ?? false
+        isLoading = !loadingWasStopped && !webContentDidCrash && (webView?.isLoading ?? false)
         if let url = webView?.url {
             self.url = url
         }
@@ -582,6 +585,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
 
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        loadingWasStopped = false
         // 任何新导航都说明 WebContent 进程已经恢复，清掉崩溃占位。
         webContentDidCrash = false
         isLoading = true
@@ -602,8 +606,6 @@ extension BrowserTab: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        isLoading = false
-        estimatedProgress = 0
         syncNavigationState()
         handleNavigationFinished(url: webView.url)
         if let url = webView.url {
@@ -627,14 +629,10 @@ extension BrowserTab: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        isLoading = false
-        estimatedProgress = 0
         syncNavigationState()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        isLoading = false
-        estimatedProgress = 0
         syncNavigationState()
     }
 

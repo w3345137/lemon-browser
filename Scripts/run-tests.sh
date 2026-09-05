@@ -78,6 +78,10 @@ run_test TestWebContentCrash \
   "$project_root/Scripts/TestWebContentCrash.swift" \
   "${TAB_HARNESS[@]}"
 
+run_test TestNavigationLoading \
+  "$project_root/Scripts/TestNavigationLoading.swift" \
+  "${TAB_HARNESS[@]}"
+
 run_test TestMediaAudibility \
   "$project_root/Scripts/TestMediaAudibility.swift" \
   "${TAB_HARNESS[@]}"
