@@ -37,6 +37,8 @@ enum WebKitFactory {
         configuration.userContentController.addUserScript(MediaAudibilityBridge.webAudioScript)
         configuration.userContentController.addUserScript(MediaAudibilityBridge.tabMuteScript)
         configuration.userContentController.addUserScript(ExternalApplicationPolicy.userGestureScript)
+        configuration.userContentController.addUserScript(TencentMeetingPlaybackBridge.userScript)
+        configuration.userContentController.addUserScript(WangfeiPlaybackBridge.userScript)
         ContentBlocker.shared.install(on: configuration)
         return configuration
     }
@@ -44,7 +46,7 @@ enum WebKitFactory {
     @MainActor
     static func makeWebView(isPrivate: Bool) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeConfiguration(isPrivate: isPrivate))
-        webView.allowsBackForwardNavigationGestures = true
+        webView.allowsBackForwardNavigationGestures = false
         webView.allowsMagnification = true
         webView.allowsLinkPreview = true
         if #available(macOS 13.3, *) {

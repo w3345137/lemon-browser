@@ -55,6 +55,13 @@ enum TestMediaAudibility {
         // 导航/释放重置：新文档从静音开始；标签静音标记跨导航保留（Chromium 语义）。
         tab.resetMediaAudibility()
         precondition(tab.mediaState == .none)
+        tab.mediaAudibilityDidChange(source: "dom", audible: true, documentID: "frame-a")
+        tab.mediaAudibilityDidChange(source: "dom", audible: true, documentID: "frame-b")
+        tab.mediaAudibilityDidChange(source: "dom", audible: false, documentID: "frame-a")
+        precondition(tab.mediaState == .playing, "paused iframe must not clear another playing iframe")
+        tab.mediaAudibilityDidChange(source: "dom", audible: false, documentID: "frame-b")
+        precondition(tab.mediaState == .none)
+        tab.resetMediaAudibility()
 
         print("media-audibility-tests=passed")
     }

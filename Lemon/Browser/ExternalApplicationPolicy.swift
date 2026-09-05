@@ -31,6 +31,16 @@ enum ExternalApplicationPolicy {
         return age >= 0 && age <= validityInterval
     }
 
+    /// Chromium 会把真实用户激活产生的单个新窗口视为允许的弹窗。
+    /// 页面加载或定时器触发的窗口仍交给站点权限处理。
+    static func allowsUserInitiatedPopup(
+        navigationType: WKNavigationType,
+        gestureDate: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        navigationType == .linkActivated || isRecentGesture(at: gestureDate, now: now)
+    }
+
     /// 注入隔离内容世界，页面脚本无法伪造 `isTrusted` 事件，
     /// 也无法直接调用这个 message handler。
     static let userGestureScript = WKUserScript(

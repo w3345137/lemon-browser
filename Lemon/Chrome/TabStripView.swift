@@ -13,7 +13,7 @@ struct TabStripView: NSViewRepresentable {
         layout.scrollDirection = .horizontal
         layout.minimumLineSpacing = 2
         layout.minimumInteritemSpacing = 2
-        layout.sectionInset = NSEdgeInsets(top: 4, left: 0, bottom: 2, right: 0)
+        layout.sectionInset = NSEdgeInsets(top: 4, left: 0, bottom: 0, right: 0)
 
         let collectionView = TabCollectionView()
         collectionView.collectionViewLayout = layout
@@ -116,7 +116,7 @@ struct TabStripView: NSViewRepresentable {
             sizeForItemAt indexPath: IndexPath
         ) -> NSSize {
             guard indexPath.item < tabs.count else { return .zero }
-            return NSSize(width: tabs[indexPath.item].isPinned ? 38 : regularTabWidth(), height: 34)
+            return NSSize(width: tabs[indexPath.item].isPinned ? 38 : regularTabWidth(), height: 36)
         }
 
         func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
@@ -501,14 +501,14 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        iconView.frame = NSRect(x: pinnedState ? 12 : 9, y: 10, width: 14, height: 14)
+        iconView.frame = NSRect(x: pinnedState ? 12 : 14, y: 11, width: 14, height: 14)
         loadingIndicator.frame = iconView.frame
-        closeButton.frame = NSRect(x: view.bounds.width - 23, y: 9, width: 16, height: 16)
-        audioButton.frame = NSRect(x: view.bounds.width - 42, y: 9, width: 16, height: 16)
+        closeButton.frame = NSRect(x: view.bounds.width - 28, y: 10, width: 16, height: 16)
+        audioButton.frame = NSRect(x: view.bounds.width - 47, y: 10, width: 16, height: 16)
         titleField.frame = NSRect(
-            x: 29,
-            y: 8,
-            width: max(0, view.bounds.width - (showsAudioIndicator ? 78 : 58)),
+            x: 34,
+            y: 9,
+            width: max(0, view.bounds.width - (showsAudioIndicator ? 88 : 68)),
             height: 18
         )
     }
@@ -582,15 +582,18 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
 
     private func updateAppearance(animated: Bool) {
         let changes = {
+            let attached = self.selectedState && !self.draggingState
+            (self.view as? TabCellView)?.attached = attached
+            self.view.layer?.cornerRadius = attached ? 0 : 10
+            self.view.layer?.zPosition = attached ? 2 : (self.hovering ? 1 : 0)
             if self.draggingState {
                 self.view.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor
                 self.view.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.65).cgColor
                 self.view.layer?.borderWidth = 1
                 self.view.alphaValue = 0.42
             } else if self.selectedState {
-                self.view.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
-                self.view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.38).cgColor
-                self.view.layer?.borderWidth = 0.7
+                self.view.layer?.backgroundColor = NSColor.clear.cgColor
+                self.view.layer?.borderWidth = 0
                 self.view.alphaValue = 1
             } else if self.hovering {
                 self.view.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.065).cgColor
@@ -627,10 +630,42 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
 }
 
 private final class TabCellView: NSView {
+    var attached = false { didSet { needsDisplay = true } }
     var onHoverChange: ((Bool) -> Void)?
     private var hoverArea: NSTrackingArea?
 
     override var mouseDownCanMoveWindow: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard attached else { return }
+        // Chromium 式轮廓：顶部凸圆角，底部反向外扩，底边贴合工具栏。
+        // 路径在 cell 内完成，避免滚动容器裁切两侧圆弧。
+        let w = bounds.width, h = bounds.height
+        let foot: CGFloat = 6
+        let radius = min(CGFloat(9), (w - 2 * foot) / 2)
+        let k: CGFloat = 0.55228475
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: 0, y: 0))
+        path.curve(to: NSPoint(x: foot, y: foot),
+                   controlPoint1: NSPoint(x: foot * k, y: 0),
+                   controlPoint2: NSPoint(x: foot, y: foot * (1 - k)))
+        path.line(to: NSPoint(x: foot, y: h - radius))
+        path.curve(to: NSPoint(x: foot + radius, y: h),
+                   controlPoint1: NSPoint(x: foot, y: h - radius * (1 - k)),
+                   controlPoint2: NSPoint(x: foot + radius * (1 - k), y: h))
+        path.line(to: NSPoint(x: w - foot - radius, y: h))
+        path.curve(to: NSPoint(x: w - foot, y: h - radius),
+                   controlPoint1: NSPoint(x: w - foot - radius * (1 - k), y: h),
+                   controlPoint2: NSPoint(x: w - foot, y: h - radius * (1 - k)))
+        path.line(to: NSPoint(x: w - foot, y: foot))
+        path.curve(to: NSPoint(x: w, y: 0),
+                   controlPoint1: NSPoint(x: w - foot, y: foot * (1 - k)),
+                   controlPoint2: NSPoint(x: w - foot * k, y: 0))
+        path.close()
+        NSColor.controlBackgroundColor.setFill()
+        path.fill()
+    }
 
     override func updateTrackingAreas() {
         if let hoverArea { removeTrackingArea(hoverArea) }

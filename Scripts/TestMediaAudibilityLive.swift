@@ -16,7 +16,7 @@ enum TestMediaAudibilityLive {
         try? FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: fixtureRoot) }
 
-        // 1 秒 440Hz 正弦波，够触发 audibility 事件即可。
+        // 静默 PCM 验证播放/静音与帧状态传递，不向扬声器输出测试音。
         let sampleRate = 8000
         var wav = Data()
         let dataSize = UInt32(sampleRate * 2)
@@ -29,8 +29,8 @@ enum TestMediaAudibilityLive {
         wav.append(contentsOf: withUnsafeBytes(of: UInt16(2).littleEndian, Array.init))
         wav.append(contentsOf: withUnsafeBytes(of: UInt16(16).littleEndian, Array.init))
         wav.append(contentsOf: "data".utf8); wav.append(contentsOf: withUnsafeBytes(of: dataSize.littleEndian, Array.init))
-        for i in 0..<sampleRate {
-            let v = Int16(6000 * sin(2 * Double.pi * 440 * Double(i) / Double(sampleRate)))
+        for _ in 0..<sampleRate {
+            let v = Int16(0)
             wav.append(contentsOf: withUnsafeBytes(of: v.littleEndian, Array.init))
         }
         let toneURL = fixtureRoot.appendingPathComponent("tone.wav")
@@ -158,6 +158,37 @@ enum TestMediaAudibilityLive {
             tab.tearDown()
         }
 
+        let frameURL = fixtureRoot.appendingPathComponent("frames.html")
+        try! """
+        <!DOCTYPE html><body><iframe src="audible.html"></iframe></body>
+        """.write(to: frameURL, atomically: true, encoding: .utf8)
+        do {
+            let tab = BrowserTab(isPrivate: false, startURL: frameURL, loadsImmediately: false)
+            tab.windowState = BrowserWindowState()
+            tab.activate()
+            let host = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 320, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+            host.contentView = tab.webView
+            host.orderFront(nil)
+            defer { tab.tearDown(); host.orderOut(nil); host.contentView = nil }
+            precondition(waitFor(8) { tab.mediaState == .playing }, "iframe playback was not reported")
+            tab.webView?.evaluateJavaScript("document.querySelector('iframe').remove()")
+            precondition(waitFor(8) { tab.mediaState == .none }, "removed iframe left a stale audio indicator")
+            var silentGraphReady = false
+            tab.webView?.evaluateJavaScript("""
+            window.ctx = new AudioContext();
+            window.gain = ctx.createGain();
+            gain.connect(ctx.destination);
+            ctx.resume();
+            """) { _, _ in silentGraphReady = true }
+            precondition(waitFor(4) { silentGraphReady })
+            _ = waitFor(2) { tab.mediaState == .playing }
+            precondition(tab.mediaState == .none, "silent connected Web Audio graph must not light the indicator")
+            var disconnected = false
+            tab.webView?.evaluateJavaScript("gain.disconnect(ctx.destination); ctx.close(); true") { value, error in
+                disconnected = error == nil && value as? Bool == true
+            }
+            precondition(waitFor(4) { disconnected }, "destination disconnect must retain native semantics")
+        }
         print("media-audibility-live-tests=passed")
     }
 }

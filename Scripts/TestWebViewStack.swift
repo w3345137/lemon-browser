@@ -25,6 +25,11 @@ enum TestWebViewStack {
     @MainActor
     static func main() {
         _ = NSApplication.shared
+        for isPrivate in [false, true] {
+            let view = WebKitFactory.makeWebView(isPrivate: isPrivate)
+            precondition(!view.allowsBackForwardNavigationGestures)
+            precondition(view.allowsMagnification)
+        }
         let container = WebViewStackContainer(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         let firstID = UUID()
         let secondID = UUID()

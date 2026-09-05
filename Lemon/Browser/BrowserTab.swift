@@ -1,6 +1,12 @@
 import AppKit
 import Combine
+import OSLog
 import WebKit
+
+private let tencentMeetingPlaybackLog = Logger(
+    subsystem: "com.workbuddy.lumen",
+    category: "TencentMeetingPlayback"
+)
 
 enum BrowserTabLifecycleState: String {
     case active
@@ -60,6 +66,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     private weak var fullscreenExitWebView: WKWebView?
     private var lastTrustedUserGestureAt: Date?
     private var lastExternalApplicationOpen: (scheme: String, date: Date)?
+    private var tencentLiveActivity: NSObjectProtocol?
+    private(set) var tencentLivePlaybackMode = ""
 
     weak var windowState: BrowserWindowState?
 
@@ -110,21 +118,23 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
 
     /// 页面侧媒体桥（MediaAudibilityBridge）上报的“可闻”状态。
     /// DOM 媒体与 Web Audio 分别在隔离世界和页面世界统计，Swift 侧做并集。
-    private var domMediaAudible = false
-    private var webAudioAudible = false
+    private var audibleMediaSources = Set<String>()
+    private var mediaFrames: [String: (WKFrameInfo, WKContentWorld)] = [:]
+    private var mediaFrameTimer: Timer?
 
-    func mediaAudibilityDidChange(source: String, audible: Bool) {
-        switch source {
-        case "webaudio": webAudioAudible = audible
-        default: domMediaAudible = audible
-        }
-        let newState: BrowserTabMediaState = (domMediaAudible || webAudioAudible) ? .playing : .none
+    func mediaAudibilityDidChange(source: String, audible: Bool, documentID: String = "main") {
+        let key = "\(documentID):\(source == "webaudio" ? "webaudio" : "dom")"
+        if audible { audibleMediaSources.insert(key) }
+        else { audibleMediaSources.remove(key) }
+        let newState: BrowserTabMediaState = audibleMediaSources.isEmpty ? .none : .playing
         if mediaState != newState { mediaState = newState }
     }
 
     func resetMediaAudibility() {
-        domMediaAudible = false
-        webAudioAudible = false
+        audibleMediaSources.removeAll()
+        mediaFrames.removeAll()
+        mediaFrameTimer?.invalidate()
+        mediaFrameTimer = nil
         if mediaState != .none { mediaState = .none }
     }
 
@@ -367,6 +377,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         webContentDidCrash = false
         let view = ensureWebView()
 
+        applySitePlaybackIdentity(for: destination, to: view)
+
         if destination.isFileURL {
             let access = LocalFileAccessStore.access(destination)
             localFileAccess = access
@@ -439,7 +451,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         isStartPage = false
         title = "登录窗口"
         let view = WKWebView(frame: .zero, configuration: configuration)
-        view.allowsBackForwardNavigationGestures = true
+        view.allowsBackForwardNavigationGestures = false
         view.allowsMagnification = true
         view.allowsLinkPreview = true
         // WebKit 提供的弹窗 configuration 已继承父页面的 message handlers。
@@ -467,6 +479,11 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
             // DOM 可闻性脚本在隔离世界上报，handler 必须两边都注册。
             view.configuration.userContentController.add(proxy, name: MediaAudibilityBridge.handlerName)
             view.configuration.userContentController.add(proxy, contentWorld: .defaultClient, name: MediaAudibilityBridge.handlerName)
+            view.configuration.userContentController.add(
+                proxy,
+                contentWorld: .page,
+                name: TencentMeetingPlaybackBridge.handlerName
+            )
         }
 
         progressObserver = view.observe(\.estimatedProgress, options: [.new]) { [weak self] webView, _ in
@@ -525,6 +542,10 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
                 forName: "lemonExternalGesture",
                 contentWorld: .defaultClient
             )
+            webView?.configuration.userContentController.removeScriptMessageHandler(
+                forName: TencentMeetingPlaybackBridge.handlerName,
+                contentWorld: .page
+            )
         }
         ownsScriptMessageHandlers = false
         if let token = pendingFillToken {
@@ -543,6 +564,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         estimatedProgress = 0
         resetMediaAudibility()
         webContentDidCrash = false
+        endTencentLiveActivity()
     }
 
     private func syncNavigationState() {
@@ -576,7 +598,7 @@ extension BrowserTab: WKNavigationDelegate {
         webContentDidCrash = true
         isLoading = false
         estimatedProgress = 0
-        mediaState = .none
+        resetMediaAudibility()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -634,6 +656,10 @@ extension BrowserTab: WKNavigationDelegate {
             windowState?.openInNewTab(url, select: false)
             return .cancel
         }
+        if navigationAction.targetFrame?.isMainFrame == true,
+           let destination = navigationAction.request.url {
+            applySitePlaybackIdentity(for: destination, to: webView)
+        }
         return .allow
     }
 
@@ -662,6 +688,16 @@ extension BrowserTab: WKUIDelegate {
             )
             return nil
         }
+
+        if ExternalApplicationPolicy.allowsUserInitiatedPopup(
+            navigationType: navigationAction.navigationType,
+            gestureDate: lastTrustedUserGestureAt
+        ) {
+            // 一次真实操作只放行一个新标签，防止页面在有效期内连续弹窗。
+            lastTrustedUserGestureAt = nil
+            return windowState?.openPopup(with: configuration)
+        }
+
         let host = webView.url?.host ?? navigationAction.request.url?.host ?? ""
         let store = SitePermissionStore.shared
         var choice = store.choice(for: host, kind: .popups)
@@ -778,7 +814,35 @@ extension BrowserTab {
                 return
             }
             guard let audible = body["audible"] as? Bool else { return }
-            mediaAudibilityDidChange(source: body["source"] as? String ?? "dom", audible: audible)
+            let source = body["source"] as? String ?? "dom"
+            let documentID = body["documentID"] as? String ?? "main"
+            let key = "\(documentID):\(source)"
+            mediaAudibilityDidChange(source: source, audible: audible, documentID: documentID)
+            if audible {
+                mediaFrames[key] = (message.frameInfo, source == "webaudio" ? .page : .defaultClient)
+                if mediaFrameTimer == nil {
+                    mediaFrameTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                        Task { @MainActor [weak self] in self?.validateMediaFrames() }
+                    }
+                }
+            } else { mediaFrames.removeValue(forKey: key) }
+            return
+        }
+        if message.name == TencentMeetingPlaybackBridge.handlerName {
+            guard TencentMeetingPlaybackBridge.isLivePage(webView?.url ?? url),
+                  let body = message.body as? [String: Any],
+                  let phase = body["phase"] as? String else { return }
+            if let mode = body["mode"] as? String,
+               !mode.isEmpty,
+               mode != tencentLivePlaybackMode {
+                tencentLivePlaybackMode = mode
+                tencentMeetingPlaybackLog.info("Playback mode: \(mode, privacy: .public)")
+            }
+            if TencentMeetingPlaybackBridge.keepsProcessActive(phase: phase) {
+                beginTencentLiveActivity()
+            } else {
+                endTencentLiveActivity()
+            }
             return
         }
         guard message.name == CredentialBridge.handlerName,
@@ -807,6 +871,54 @@ extension BrowserTab {
             password: password,
             pageURL: webView?.url
         )
+    }
+}
+
+extension BrowserTab {
+    /// 帧销毁不保证发送 pagehide；在原帧中验证文档身份，清理悬挂状态。
+    private func validateMediaFrames() {
+        guard !mediaFrames.isEmpty else {
+            mediaFrameTimer?.invalidate()
+            mediaFrameTimer = nil
+            return
+        }
+        for (key, entry) in mediaFrames {
+            webView?.evaluateJavaScript("window.__lemonAudibilityDocumentID || ''", in: entry.0, in: entry.1) { [weak self] result in
+                guard let self, self.mediaFrames[key] != nil else { return }
+                let id = key.components(separatedBy: ":").first ?? ""
+                if case .success(let value) = result, value as? String == id { return }
+                self.mediaFrames.removeValue(forKey: key)
+                self.audibleMediaSources.remove(key)
+                self.mediaState = self.audibleMediaSources.isEmpty ? .none : .playing
+            }
+        }
+    }
+}
+
+private extension BrowserTab {
+    func applySitePlaybackIdentity(for destination: URL, to webView: WKWebView) {
+        let isTencentLive = TencentMeetingPlaybackBridge.isLivePage(destination)
+        webView.customUserAgent = isTencentLive
+            ? TencentMeetingPlaybackBridge.chromeCompatibleUserAgent
+            : nil
+        if !isTencentLive {
+            tencentLivePlaybackMode = ""
+            endTencentLiveActivity()
+        }
+    }
+
+    func beginTencentLiveActivity() {
+        guard tencentLiveActivity == nil else { return }
+        tencentLiveActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical],
+            reason: "腾讯会议直播播放与缓冲恢复"
+        )
+    }
+
+    func endTencentLiveActivity() {
+        guard let activity = tencentLiveActivity else { return }
+        ProcessInfo.processInfo.endActivity(activity)
+        tencentLiveActivity = nil
     }
 }
 

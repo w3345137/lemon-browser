@@ -19,6 +19,8 @@ enum MediaAudibilityBridge {
         (() => {
           if (window.__lemonMediaAudibilityInstalled) return;
           window.__lemonMediaAudibilityInstalled = true;
+          const documentID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+          window.__lemonAudibilityDocumentID = documentID;
 
           const audibleMedia = new Set();
           let lastReported = false;
@@ -52,9 +54,9 @@ enum MediaAudibilityBridge {
           const send = (audible) => {
             if (audible === lastReported) return;
             lastReported = audible;
-            try { window.webkit.messageHandlers.lemonMedia.postMessage({ audible, source: 'dom' }); } catch (_) {}
+            try { window.webkit.messageHandlers.lemonMedia.postMessage({ audible, source: 'dom', documentID }); } catch (_) {}
           };
-          const isAudible = (el) => !el.paused && !el.ended && !el.muted && el.volume > 0;
+          const isAudible = (el) => !el.paused && !el.ended && !el.error && el.readyState >= 2 && !el.muted && el.volume > 0;
           const track = (target, type) => {
             if (!(target instanceof HTMLMediaElement)) return;
             eventLog.push([type, target.paused, target.muted, target.volume, target.isConnected]);
@@ -63,9 +65,14 @@ enum MediaAudibilityBridge {
             else audibleMedia.delete(target);
             send(audibleMedia.size > 0);
           };
-          for (const type of ['play', 'playing', 'pause', 'ended', 'volumechange', 'emptied']) {
+          for (const type of ['play', 'playing', 'pause', 'ended', 'volumechange', 'emptied', 'waiting', 'error', 'loadeddata']) {
             document.addEventListener(type, (event) => track(event.target, type), true);
           }
+          window.addEventListener('pagehide', () => send(false));
+          window.addEventListener('pageshow', () => {
+            lastReported = false;
+            document.querySelectorAll('audio,video').forEach(el => track(el, 'pageshow'));
+          });
 
           // 自愈巡检：媒体事件可能遗漏——元素被移出 DOM 后其事件不再经过
           // document 捕获路径（SPA 页面常见清理方式），或状态被页面非常规修改。
@@ -91,13 +98,14 @@ enum MediaAudibilityBridge {
 
     /// 页面世界脚本：Web Audio 的 AudioContext 没有 DOM 事件，也不在隔离世界
     /// 可见，只能在页面世界包装构造器拿到实例后监听 statechange。
-    /// 可闻 = running 且确有节点连到 destination（连接注册表由 tabMuteScript
-    /// 的 connect 改道提供）；纯后台 running 的上下文不点亮喇叭。
+    /// 可闻性由主输出分析器采样；纯后台 running 的上下文不点亮喇叭。
     static let webAudioScript = WKUserScript(
         source: #"""
         (() => {
           if (window.__lemonWebAudioAudibilityInstalled) return;
           window.__lemonWebAudioAudibilityInstalled = true;
+          const documentID = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+          window.__lemonAudibilityDocumentID = documentID;
 
           const runningContexts = new Set();
           const allContexts = new Set();
@@ -107,10 +115,7 @@ enum MediaAudibilityBridge {
             lastReported,
             contexts: Array.from(allContexts).map((c) => c.state)
           });
-          // 只把“running 且确有节点连到 destination”的上下文算作可闻：
-          // 后台常驻但不输出的 AudioContext（可视分析、预热等）不应点亮喇叭。
-          // 连接信息由 tabMuteScript 的 connect 改道注册表提供；注册表未就绪时
-          // 退化为 running≈可闻。
+          // 读取输出分析器，排除预热上下文、已停止音源和零增益输出。
           const isOutputAudible = (ctx) => {
             if (ctx.state !== 'running') return false;
             try {
@@ -118,7 +123,7 @@ enum MediaAudibilityBridge {
                 return window.__lemonHasOutputConnection(ctx);
               }
             } catch (_) {}
-            return true;
+            return false;
           };
           const recompute = () => {
             runningContexts.clear();
@@ -128,7 +133,7 @@ enum MediaAudibilityBridge {
           const send = (audible) => {
             if (audible === lastReported) return;
             lastReported = audible;
-            try { window.webkit.messageHandlers.lemonMedia.postMessage({ audible, source: 'webaudio' }); } catch (_) {}
+            try { window.webkit.messageHandlers.lemonMedia.postMessage({ audible, source: 'webaudio', documentID }); } catch (_) {}
           };
 
           const wrap = (Original) => {
@@ -147,9 +152,10 @@ enum MediaAudibilityBridge {
             return new Proxy(Original, handler);
           };
 
-          // 自愈巡检：connect 不触发 statechange（先 resume 后接线的页面），
-          // 每 2 秒重算一次保证收敛。
-          setInterval(() => { try { recompute(); } catch (_) {} }, 2000);
+          // 音源停止和接线变化不触发 context statechange，定期采样输出。
+          setInterval(() => { try { recompute(); } catch (_) {} }, 250);
+          window.addEventListener('pagehide', () => send(false));
+          window.addEventListener('pageshow', recompute);
 
           try {
             const Wrapped = wrap(window.AudioContext);
@@ -228,13 +234,25 @@ enum MediaAudibilityBridge {
             const origConnect = AudioNode.prototype.connect;
             const gainsByContext = new WeakMap();
             // 供可闻性桥查询：该上下文是否确有节点接到输出。
-            window.__lemonHasOutputConnection = (ctx) => gainsByContext.has(ctx);
+            const meters = new WeakMap();
+            window.__lemonHasOutputConnection = (ctx) => {
+              const meter = meters.get(ctx);
+              if (!meter || tabMuted || ctx.state !== 'running') return false;
+              meter.node.getFloatTimeDomainData(meter.samples);
+              if (meter.samples.some(value => Math.abs(value) > 0.0001)) meter.lastSignal = performance.now();
+              // 短暂停顿保持指示，避免对话间隙和分片边界频繁闪烁。
+              return performance.now() - meter.lastSignal < 700;
+            };
             const masterFor = (ctx) => {
               let g = gainsByContext.get(ctx);
               if (!g) {
                 g = ctx.createGain();
                 g.gain.value = tabMuted ? 0 : 1;
-                origConnect.call(g, ctx.destination);
+                const analyser = ctx.createAnalyser();
+                analyser.fftSize = 2048;
+                origConnect.call(g, analyser);
+                origConnect.call(analyser, ctx.destination);
+                meters.set(ctx, {node: analyser, samples: new Float32Array(analyser.fftSize), lastSignal: -Infinity});
                 gainsByContext.set(ctx, g);
                 masterGains.add(g);
               }
@@ -249,6 +267,13 @@ enum MediaAudibilityBridge {
                 }
               } catch (_) {}
               return origConnect.call(this, dest, ...rest);
+            };
+            const origDisconnect = AudioNode.prototype.disconnect;
+            AudioNode.prototype.disconnect = function(dest, ...rest) {
+              if (dest === this.context.destination && gainsByContext.has(this.context)) {
+                return origDisconnect.call(this, gainsByContext.get(this.context), ...rest);
+              }
+              return origDisconnect.apply(this, arguments);
             };
           } catch (_) {}
 

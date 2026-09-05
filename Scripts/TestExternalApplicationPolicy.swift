@@ -31,6 +31,22 @@ enum TestExternalApplicationPolicy {
             )
         )
         precondition(!ExternalApplicationPolicy.isRecentGesture(at: nil, now: now))
+
+        precondition(ExternalApplicationPolicy.allowsUserInitiatedPopup(
+            navigationType: .linkActivated,
+            gestureDate: nil,
+            now: now
+        ))
+        precondition(ExternalApplicationPolicy.allowsUserInitiatedPopup(
+            navigationType: .other,
+            gestureDate: now.addingTimeInterval(-1),
+            now: now
+        ))
+        precondition(!ExternalApplicationPolicy.allowsUserInitiatedPopup(
+            navigationType: .other,
+            gestureDate: now.addingTimeInterval(-4),
+            now: now
+        ))
         precondition(
             !ExternalApplicationPolicy.isRecentGesture(
                 at: Date(timeIntervalSince1970: 101),

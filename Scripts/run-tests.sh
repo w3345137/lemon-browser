@@ -36,6 +36,8 @@ TAB_HARNESS=(
   "$project_root/Lemon/Browser/WebKitFactory.swift"
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift"
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
+  "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
+  "$project_root/Lemon/Browser/WangfeiPlaybackBridge.swift"
 )
 
 # 真机级测试：真实 CredentialBridge / MediaAudibilityBridge / CredentialStore。
@@ -45,6 +47,8 @@ LIVE_HARNESS=(
   "$project_root/Lemon/Browser/WebKitFactory.swift"
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift"
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
+  "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
+  "$project_root/Lemon/Browser/WangfeiPlaybackBridge.swift"
   "$project_root/Lemon/Security/CredentialBridge.swift"
   "$project_root/Lemon/Security/CredentialStore.swift"
 )
@@ -118,7 +122,9 @@ run_test TestDownloadIntegrity \
   "$project_root/Lemon/Data/DownloadStore.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
-  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
+  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift" \
+  "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
+  "$project_root/Lemon/Browser/WangfeiPlaybackBridge.swift"
 
 run_test TestDownloadStore \
   "$project_root/Scripts/TestDownloadStore.swift" \
@@ -127,7 +133,9 @@ run_test TestDownloadStore \
   "$project_root/Lemon/Data/DownloadStore.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
-  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
+  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift" \
+  "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
+  "$project_root/Lemon/Browser/WangfeiPlaybackBridge.swift"
 
 run_test TestSessionCookieVault \
   "$project_root/Scripts/TestSessionCookieVault.swift" \
@@ -149,11 +157,21 @@ run_test TestExternalApplicationPolicy \
   "$project_root/Scripts/TestExternalApplicationPolicy.swift" \
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
 
+run_test TestTencentMeetingPlayback \
+  "$project_root/Scripts/TestTencentMeetingPlayback.swift" \
+  "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift"
+
+run_test TestWangfeiPlayback \
+  "$project_root/Scripts/TestWangfeiPlayback.swift" \
+  "$project_root/Lemon/Browser/WangfeiPlaybackBridge.swift"
+
 run_test TestWebViewStack \
   "$project_root/Scripts/TestWebViewStack.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
-  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
+  "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift" \
+  "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
+  "$project_root/Lemon/Browser/WangfeiPlaybackBridge.swift"
 
 if [ "$failures" -gt 0 ]; then
   echo "测试失败数：$failures"

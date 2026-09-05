@@ -13,10 +13,9 @@ struct BrowserWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             chrome
-            Divider().opacity(0.28)
             AddressBarView(state: state, addressFocused: $addressFocused)
                 .frame(height: SafariChrome.addressRowHeight)
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.88))
+                .background(Color(nsColor: .controlBackgroundColor))
             if state.isBookmarkBarVisible {
                 Divider().opacity(0.22)
                 BookmarkBarView(state: state)
