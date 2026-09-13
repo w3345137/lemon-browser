@@ -20,6 +20,10 @@ final class ContentBlocker {
     func install(on configuration: WKWebViewConfiguration) {}
 }
 
+final class FocusProbe: NSView {
+    override var acceptsFirstResponder: Bool { true }
+}
+
 @main
 enum TestWebViewStack {
     @MainActor
@@ -93,6 +97,52 @@ enum TestWebViewStack {
             guard let responderView = window.firstResponder as? NSView else { return false }
             return responderView === second || responderView.isDescendant(of: second)
         }, "selected WKWebView never received keyboard focus")
+
+        // Native key events must reach the DOM, not merely an AppKit responder.
+        second.loadHTMLString("<html><body><script>window.keys=[];addEventListener('keydown',e=>{keys.push(e.key);e.preventDefault()});</script>Keyboard fixture</body></html>", baseURL: nil)
+        var ready = false
+        precondition(waitFor(5) {
+            second.evaluateJavaScript("Array.isArray(window.keys)") { value, _ in ready = value as? Bool == true }
+            return ready
+        })
+        for (code, chars) in [(UInt16(49), " "), (UInt16(123), "\u{F702}"), (UInt16(124), "\u{F703}")] {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: chars,
+                charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
+            NSApp.sendEvent(event)
+        }
+        var keys: [String] = []
+        precondition(waitFor(5) {
+            second.evaluateJavaScript("window.keys") { value, _ in keys = value as? [String] ?? [] }
+            return keys == [" ", "ArrowLeft", "ArrowRight"]
+        }, "native space/arrow events did not reach DOM: \(keys)")
+
+        let probe = FocusProbe(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+        second.addSubview(probe)
+        precondition(window.makeFirstResponder(probe))
+        let entries = [WebViewStackEntry(id: firstID, webView: first),
+                       WebViewStackEntry(id: secondID, webView: second)]
+        container.sync(entries: entries, selectedID: firstID, focusRequestID: UUID())
+        precondition(waitFor(1) { window.firstResponder === first })
+        container.sync(entries: entries, selectedID: secondID, focusRequestID: UUID())
+        precondition(waitFor(1) { window.firstResponder === probe }, "internal responder was not restored")
+        probe.removeFromSuperview()
+        window.makeFirstResponder(addressField)
+        container.sync(entries: entries, selectedID: secondID, focusRequestID: UUID())
+        precondition(waitFor(1) { window.firstResponder === second }, "detached responder did not fall back")
+
+        InspectorController.open(second)
+        precondition(waitFor(5) { InspectorController.isVisible(second) })
+        container.sync(entries: entries, selectedID: firstID)
+        precondition(waitFor(5) { !InspectorController.isVisible(second) })
+        precondition(!InspectorController.isVisible(first), "B must not inherit A inspector")
+        container.sync(entries: entries, selectedID: secondID)
+        precondition(waitFor(5) { InspectorController.isVisible(second) }, "A inspector must restore")
+        InspectorController.toggle(second)
+        precondition(waitFor(5) { !InspectorController.isVisible(second) })
+        container.sync(entries: entries, selectedID: firstID)
+        container.sync(entries: entries, selectedID: secondID)
+        precondition(!InspectorController.isVisible(second), "Closed inspector must stay closed")
 
         container.sync(
             entries: [WebViewStackEntry(id: secondID, webView: second)],

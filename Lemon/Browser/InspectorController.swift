@@ -4,6 +4,17 @@ import WebKit
 /// Keep private WebKit SPI in one boundary; never route inspection to another app.
 @MainActor
 enum InspectorController {
+    static func isVisible(_ view: WKWebView?) -> Bool {
+        guard let view, view.responds(to: NSSelectorFromString("_inspector")),
+              let inspector = view.perform(NSSelectorFromString("_inspector"))?.takeUnretainedValue() as? NSObject,
+              inspector.responds(to: NSSelectorFromString("isVisible")) else { return false }
+        return inspector.value(forKey: "isVisible") as? Bool == true
+    }
+
+    static func toggle(_ view: WKWebView?) {
+        if isVisible(view) { invoke("close", on: view) }
+        else { open(view) }
+    }
     static func configure(_ view: WKWebView) {
         if #available(macOS 13.3, *) { view.isInspectable = false }
         let preferences = view.configuration.preferences

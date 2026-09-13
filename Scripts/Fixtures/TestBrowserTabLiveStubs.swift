@@ -81,6 +81,7 @@ final class BrowserWindowState: NSObject {
         WKWebView(frame: .zero, configuration: configuration)
     }
     func closeTab(_ id: UUID) {}
+    func tryAutomaticCredentialFill(_ tab: BrowserTab) {}
     func tabDidFinishNavigation(_ tab: BrowserTab) {
         finishedNavigations += 1
     }

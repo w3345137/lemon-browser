@@ -16,6 +16,12 @@ enum TestNavigationLoading {
     @MainActor
     static func main() {
         _ = NSApplication.shared
+        precondition(BrowserTabTitle.display(documentTitle: "话题", url: URL(string: "https://www.zhihu.com/topic/123")) == "话题")
+        precondition(BrowserTabTitle.display(documentTitle: "", url: URL(string: "https://www.zhihu.com/topic/123")) == "zhihu.com/topic/123")
+        precondition(BrowserTabTitle.display(documentTitle: nil, url: URL(string: "about:blank")) == "新标签页")
+        precondition(BrowserTabTitle.display(documentTitle: "  ", url: nil) == "新标签页")
+        precondition(BrowserTabTitle.display(documentTitle: nil, url: URL(fileURLWithPath: "/tmp/本地网页.html")) == "本地网页.html")
+        precondition(BrowserTabTitle.display(documentTitle: nil, url: URL(string: "https://user:secret@www.example.com:443/")) == "example.com")
         let server = Process()
         server.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         server.arguments = ["-u", "-c", """
@@ -30,7 +36,7 @@ enum TestNavigationLoading {
                 if self.path.startswith('/fail'):
                     self.connection.close()
                     return
-                data = b'<html><title>Loaded</title><body>Ready</body></html>'
+                data = b'<html><title>Loaded</title><body style="height:5000px">Ready<div id="inner" style="height:100px;overflow:auto"><div style="height:3000px">Inner</div></div></body></html>'
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html')
                 self.send_header('Content-Length', str(len(data)))
@@ -59,6 +65,29 @@ enum TestNavigationLoading {
         wait("restart", until: { tab.isLoading })
         navigate("done")
         wait("superseding navigation finishes", until: { !tab.isLoading && view.title == "Loaded" })
+        view.setFrameSize(NSSize(width: 800, height: 600))
+        var scrolled = false
+        view.evaluateJavaScript("window.scrollTo(0,800);document.getElementById('inner').scrollTop=300;window.scrollY") { value, error in
+            precondition(error == nil && (value as? Double ?? 0) > 0)
+            scrolled = true
+        }
+        wait("scroll fixture", until: { scrolled })
+        tab.restoreScroll(CGPoint(x: 0, y: 800))
+        tab.reload()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        wait("reload finishes", until: { !tab.isLoading })
+        var checked = false
+        view.evaluateJavaScript("[window.scrollY,document.getElementById('inner').scrollTop]") { value, error in
+            precondition(error == nil && (value as? [Double]) == [0, 0], "Refresh must return to top")
+            checked = true
+        }
+        wait("reload scroll reset", until: { checked })
+        view.evaluateJavaScript("document.title='动态话题标题'")
+        wait("dynamic title", until: { tab.title == "动态话题标题" })
+        view.evaluateJavaScript("document.title=''")
+        wait("empty title falls back to URL", until: {
+            tab.title == BrowserTabTitle.display(documentTitle: nil, url: view.url)
+        })
         navigate("pending")
         wait("before failure", until: { tab.isLoading })
         navigate("fail")

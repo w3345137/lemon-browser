@@ -12,11 +12,16 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
     @Published private(set) var storageError: String?
     @Published private(set) var lastSavedAt: Date?
 
-    // Keep the legacy service and archive folder so existing sessions remain decryptable.
-    private static let keyService = "com.workbuddy.lumen.session-cookie-key"
-    private static let keyAccount = "vault-key.v2"
+    // v3 uses Lemon's stable signing identity. The previous ad-hoc-signed key
+    // can become unreadable after an update, so it is attempted silently and
+    // never allowed to block a fresh archive.
+    private static let keyService = "com.workbuddy.lemon.session-cookie-key"
+    private static let keyAccount = "vault-key.v3"
+    private static let legacyKeyService = "com.workbuddy.lumen.session-cookie-key"
+    private static let legacyKeyAccount = "vault-key.v2"
     private let cookieStore: WKHTTPCookieStore
     private let customArchiveURL: URL?
+    private let customLegacyArchiveURL: URL?
     private let storageQueue = DispatchQueue(label: "com.workbuddy.lemon.session-cookie-vault")
     private var isPreparing = false
     private var isPrepared = false
@@ -25,6 +30,7 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
     // Accessed only on storageQueue. Never overwrite an archive that failed to decrypt.
     private var canWrite = true
     private var cachedKey: SymmetricKey?
+    private var cachedLegacyKey: SymmetricKey?
     private var periodicSave: Timer?
     private var snapshotRevision = 0
     private var committedRevision = 0 // storageQueue only
@@ -32,13 +38,22 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
     private override init() {
         cookieStore = WKWebsiteDataStore.default().httpCookieStore
         customArchiveURL = nil
+        customLegacyArchiveURL = nil
         super.init()
     }
 
-    init(cookieStore: WKHTTPCookieStore, archiveURL: URL, key: SymmetricKey) {
+    init(
+        cookieStore: WKHTTPCookieStore,
+        archiveURL: URL,
+        key: SymmetricKey,
+        legacyArchiveURL: URL? = nil,
+        legacyKey: SymmetricKey? = nil
+    ) {
         self.cookieStore = cookieStore
         self.customArchiveURL = archiveURL
+        self.customLegacyArchiveURL = legacyArchiveURL
         self.cachedKey = key
+        self.cachedLegacyKey = legacyKey
         super.init()
     }
 
@@ -161,13 +176,23 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
             in: .userDomainMask
         ).first!.appendingPathComponent("Lumen", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder.appendingPathComponent("session-cookies.v1.enc")
+        return folder.appendingPathComponent("session-cookies.v2.enc")
+    }
+
+    private var legacyArchiveURL: URL? {
+        if let customLegacyArchiveURL { return customLegacyArchiveURL }
+        guard customArchiveURL == nil else { return nil }
+        return archiveURL.deletingLastPathComponent()
+            .appendingPathComponent("session-cookies.v1.enc")
     }
 
     private func readRecords() -> [SessionCookieRecord] {
         guard FileManager.default.fileExists(atPath: archiveURL.path) else {
             canWrite = true
-            return []
+            // A legacy archive may belong to an older code signature. Try it
+            // without authentication UI; failure is non-fatal and the file is
+            // retained while a new archive is created from current WebKit data.
+            return readLegacyRecords()
         }
         guard let encrypted = try? Data(contentsOf: archiveURL),
               let key = encryptionKey(createIfMissing: false),
@@ -179,6 +204,19 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
             return []
         }
         canWrite = true
+        return records
+    }
+
+    private func readLegacyRecords() -> [SessionCookieRecord] {
+        guard let legacyArchiveURL,
+              FileManager.default.fileExists(atPath: legacyArchiveURL.path),
+              let encrypted = try? Data(contentsOf: legacyArchiveURL),
+              let key = legacyEncryptionKey(),
+              let sealed = try? AES.GCM.SealedBox(combined: encrypted),
+              let clear = try? AES.GCM.open(sealed, using: key),
+              let records = try? JSONDecoder().decode([SessionCookieRecord].self, from: clear) else {
+            return []
+        }
         return records
     }
 
@@ -205,16 +243,12 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
 
     private func encryptionKey(createIfMissing: Bool) -> SymmetricKey? {
         if let cachedKey { return cachedKey }
-        let authenticationContext = LAContext()
-        authenticationContext.localizedReason = "保存和恢复 Lemon 的网站登录状态"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keyService,
             kSecAttrAccount as String: Self.keyAccount,
             kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseDataProtectionKeychain as String: true,
-            kSecUseAuthenticationContext as String: authenticationContext
+            kSecMatchLimit as String: kSecMatchLimitOne
         ]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -238,8 +272,7 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
             kSecAttrAccount as String: Self.keyAccount,
             kSecValueData as String: data,
             kSecAttrLabel as String: "Lemon session cookie key",
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecUseDataProtectionKeychain as String: true
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         if addStatus == errSecDuplicateItem {
@@ -248,6 +281,27 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
         guard addStatus == errSecSuccess else { return nil }
         let key = SymmetricKey(data: data)
         cachedKey = key
+        return key
+    }
+
+    private func legacyEncryptionKey() -> SymmetricKey? {
+        if let cachedLegacyKey { return cachedLegacyKey }
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.legacyKeyService,
+            kSecAttrAccount as String: Self.legacyKeyAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecUseAuthenticationContext as String: context
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data, data.count == 32 else { return nil }
+        let key = SymmetricKey(data: data)
+        cachedLegacyKey = key
         return key
     }
 }

@@ -25,6 +25,13 @@ final class BrowserWindowState: NSObject, ObservableObject {
     @Published var sidebarTab: SidebarTab = .bookmarks
     @Published var closedTabs: [ClosedTabSnapshot] = []
     @Published var isBookmarkSavePopoverPresented = false
+    @Published var credentialNotice: String?
+    private var fillRequestID = UUID()
+
+    private func cancelCredentialFill() {
+        fillRequestID = UUID()
+        credentialNotice = nil
+    }
     let downloads: DownloadStore
 
     let bookmarks = BookmarkStore.shared
@@ -163,6 +170,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         insert(tab, after: selectedIndex, select: select)
         isAddressEditing = false
         syncAddressBar()
+        if select { requestPageFocus() }
     }
 
     func openLocalHTMLFile() {
@@ -190,6 +198,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         insert(tab, after: selectedIndex, select: true)
         isAddressEditing = false
         syncAddressBar()
+        requestPageFocus()
         return webView
     }
 
@@ -198,6 +207,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     func select(_ id: BrowserTab.ID) {
+        cancelCredentialFill()
         guard tabs.contains(where: { $0.id == id }) else { return }
         guard selectedTabID != id else {
             pendingSelectionID = nil
@@ -395,6 +405,32 @@ final class BrowserWindowState: NSObject, ObservableObject {
 
     func tabDidFinishNavigation(_ tab: BrowserTab) {
         persistSession()
+        tryAutomaticCredentialFill(tab)
+    }
+
+    private var automaticFillInFlight = Set<UUID>()
+
+    func tryAutomaticCredentialFill(_ tab: BrowserTab) {
+        guard !isPrivate, selectedTab === tab, let view = tab.webView,
+              let url = view.url, url.scheme == "https" else { return }
+        let matches = credentials.credentials(for: url)
+        let preferred = UserDefaults.standard.dictionary(forKey: "preferredFillAccounts") as? [String: String] ?? [:]
+        let credential = matches.count == 1 ? matches.first : matches.first { preferred[$0.scope] == $0.id }
+        guard let credential, !credential.username.isEmpty else { return }
+        guard automaticFillInFlight.insert(tab.id).inserted else { return }
+        let revision = tab.navigationRevision
+        // Probe without secrets first. Automatic fill never targets a cross-origin
+        // frame, submits the form, or replaces fields the user has started editing.
+        view.evaluateJavaScript(CredentialBridge.automaticFillReadinessScript) { [weak self, weak tab, weak view] result, _ in
+            Task { @MainActor in
+                guard let self, let tab else { return }
+                defer { self.automaticFillInFlight.remove(tab.id) }
+                guard let view, self.selectedTab === tab, tab.navigationRevision == revision,
+                      tab.webView === view, view.url == url, result as? Bool == true,
+                      let password = try? self.credentials.password(for: credential) else { return }
+                tab.fill(credential, password: password, automatic: true) { _ in }
+            }
+        }
     }
 
     /// WKWebView 本身不适合做 @Published 值，但稳定宿主必须在它创建或释放时
@@ -423,9 +459,12 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     func fillCredential(_ credential: WebCredential) {
+        cancelCredentialFill()
+        guard let tab = selectedTab else { return }
         do {
             let password = try credentials.password(for: credential)
-            attemptFill(credential, password: password, isRetry: false)
+            attemptFill(credential, password: password, tab: tab, revision: tab.navigationRevision,
+                        requestID: fillRequestID, isRetry: false)
         } catch {
             presentCredentialError(error)
         }
@@ -433,15 +472,28 @@ final class BrowserWindowState: NSObject, ObservableObject {
 
     /// SPA 登录框可能在点钥匙菜单后才渲染出来；第一次失败等 350ms 自动重试一次，
     /// 仍失败才提示用户。重试必须确认目标标签仍是当前标签，避免填进别的页面。
-    private func attemptFill(_ credential: WebCredential, password: String, isRetry: Bool) {
-        guard let tab = selectedTab else { return }
+    private func attemptFill(_ credential: WebCredential, password: String, tab: BrowserTab,
+                             revision: UUID, requestID: UUID, isRetry: Bool) {
+        guard fillRequestID == requestID, selectedTab === tab,
+              tab.navigationRevision == revision, tab.webView != nil else { return }
         tab.fill(credential, password: password) { [weak self, weak tab] ok in
             Task { @MainActor in
-                guard let self, let tab, !ok else { return }
-                guard self.selectedTab === tab, tab.webView != nil else { return }
+                guard let self, let tab else { return }
+                guard self.fillRequestID == requestID, self.selectedTab === tab,
+                      tab.navigationRevision == revision, tab.webView != nil else { return }
+                if ok {
+                    if !self.isPrivate {
+                        var preferred = UserDefaults.standard.dictionary(forKey: "preferredFillAccounts") as? [String: String] ?? [:]
+                        preferred[credential.scope] = credential.id
+                        UserDefaults.standard.set(preferred, forKey: "preferredFillAccounts")
+                    }
+                    return
+                }
                 if !isRetry {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                        self?.attemptFill(credential, password: password, isRetry: true)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak tab] in
+                        guard let tab else { return }
+                        self?.attemptFill(credential, password: password, tab: tab, revision: revision,
+                                          requestID: requestID, isRetry: true)
                     }
                 } else {
                     self.presentFillFailure()
@@ -451,12 +503,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     private func presentFillFailure() {
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "未能自动填充"
-        alert.informativeText = "页面上没有找到可填充的登录表单，已自动重试一次。请确认登录框已显示后，再从地址栏钥匙菜单选择账号。"
-        alert.addButton(withTitle: "好")
-        alert.runModal()
+        credentialNotice = "未能填充账号密码：请确认密码登录框已显示，再从地址栏钥匙菜单选择账号。"
     }
 
     /// 待用户确认的保存密码请求。放在 @Published 上由窗口层用 SwiftUI alert
@@ -551,12 +598,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     private func presentCredentialError(_ error: Error) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "无法处理密码"
-        alert.informativeText = error.localizedDescription
-        alert.addButton(withTitle: "好")
-        alert.runModal()
+        credentialNotice = "无法处理密码：" + error.localizedDescription
     }
 
     func addCurrentPage(to folderID: BookmarkItem.ID) {
@@ -750,6 +792,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         ) { [weak self] _ in
             // willTerminate 里再排异步 Task 可能来不及执行；快照是小文件，直接同步写。
             MainActor.assumeIsolated {
+                self?.cancelCredentialFill()
                 self?.persistSession(immediately: true)
             }
         }
@@ -758,6 +801,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     /// 窗口关闭：立即落盘会话，并逐个 tearDown 标签。tearDown 会暂停媒体并
     /// 退出全屏，避免 WebContent 进程异步退出期间继续出声、全屏窗口滞留。
     func handleWindowWillClose() {
+        cancelCredentialFill()
         persistSession(immediately: true)
         tabs.forEach { $0.tearDown() }
         Self.claimedWindowSessionIDs.remove(windowSessionID)

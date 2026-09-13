@@ -50,6 +50,56 @@ struct TestSessionCookiePersistence {
         let after = try Data(contentsOf: url)
         precondition(before == after, "Unreadable archives must be preserved")
         precondition(invalid.storageError != nil)
+
+        let legacyURL = folder.appendingPathComponent("legacy.enc")
+        let legacyKey = SymmetricKey(size: .bits256)
+        let legacyStore = WKWebsiteDataStore.nonPersistent()
+        let legacyWriter = SessionCookieVault(cookieStore: legacyStore.httpCookieStore, archiveURL: legacyURL, key: legacyKey)
+        await withCheckedContinuation { c in legacyWriter.prepare { c.resume() } }
+        await legacyStore.httpCookieStore.setCookie(cookie)
+        await withCheckedContinuation { c in legacyWriter.flush { c.resume() } }
+        legacyWriter.stopObserving()
+        let preservedLegacy = try Data(contentsOf: legacyURL)
+
+        let migratedURL = folder.appendingPathComponent("migrated.enc")
+        let migratedKey = SymmetricKey(size: .bits256)
+        let migrationStore = WKWebsiteDataStore.nonPersistent()
+        let migration = SessionCookieVault(
+            cookieStore: migrationStore.httpCookieStore,
+            archiveURL: migratedURL,
+            key: migratedKey,
+            legacyArchiveURL: legacyURL,
+            legacyKey: legacyKey
+        )
+        await withCheckedContinuation { c in migration.prepare { c.resume() } }
+        let migratedCookies = await migrationStore.httpCookieStore.allCookies()
+        precondition(migratedCookies.contains { $0.name == "login" })
+        await withCheckedContinuation { c in migration.flush { c.resume() } }
+        precondition(migration.storageError == nil)
+        precondition(FileManager.default.fileExists(atPath: migratedURL.path))
+        let legacyAfterMigration = try Data(contentsOf: legacyURL)
+        precondition(legacyAfterMigration == preservedLegacy, "Legacy archive must remain untouched")
+        migration.stopObserving()
+
+        // An archive encrypted by an inaccessible former signing identity must
+        // not permanently disable new saves or repeatedly block app shutdown.
+        let fallbackURL = folder.appendingPathComponent("fallback.enc")
+        let fallbackStore = WKWebsiteDataStore.nonPersistent()
+        let fallback = SessionCookieVault(
+            cookieStore: fallbackStore.httpCookieStore,
+            archiveURL: fallbackURL,
+            key: SymmetricKey(size: .bits256),
+            legacyArchiveURL: legacyURL,
+            legacyKey: SymmetricKey(size: .bits256)
+        )
+        await withCheckedContinuation { c in fallback.prepare { c.resume() } }
+        await fallbackStore.httpCookieStore.setCookie(cookie)
+        await withCheckedContinuation { c in fallback.flush { c.resume() } }
+        precondition(fallback.storageError == nil)
+        precondition(FileManager.default.fileExists(atPath: fallbackURL.path))
+        let legacyAfterFallback = try Data(contentsOf: legacyURL)
+        precondition(legacyAfterFallback == preservedLegacy, "Inaccessible legacy archive must remain untouched")
+        fallback.stopObserving()
         print("session-cookie-persistence-tests=passed")
     }
 }

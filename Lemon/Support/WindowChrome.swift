@@ -289,5 +289,5 @@ enum SafariChrome {
     // 原生集合的布局、点击与悬浮区域独立；底部曲线在单元内部绘制。
     static let tabSpacing: CGFloat = 0
     // 固定标签保持可辨识间距，图标按实际单元宽度居中。
-    static let pinnedTabWidth: CGFloat = 42
+    static let pinnedTabWidth: CGFloat = 46
 }

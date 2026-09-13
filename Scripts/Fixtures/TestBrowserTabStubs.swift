@@ -102,6 +102,7 @@ final class BrowserWindowState: NSObject {
     }
     func closeTab(_ id: UUID) {}
     func tabDidFinishNavigation(_ tab: BrowserTab) {}
+    func tryAutomaticCredentialFill(_ tab: BrowserTab) {}
     func offerToSaveCredential(scope: String, username: String, password: String) {
         offeredCredentials.append((scope, username))
     }

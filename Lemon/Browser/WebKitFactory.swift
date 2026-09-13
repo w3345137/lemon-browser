@@ -83,10 +83,31 @@ final class WebViewStackContainer: NSView {
     private var fullscreenObservers: [UUID: NSKeyValueObservation] = [:]
     private var selectedID: UUID?
     private var handledFocusRequestID: UUID?
+    private final class SavedFocus {
+        weak var view: NSView?
+        init(_ view: NSView) { self.view = view }
+    }
+    private var savedFocus: [UUID: SavedFocus] = [:]
+    private var inspectorWasOpen: [UUID: Bool] = [:]
 
     func sync(entries: [WebViewStackEntry], selectedID: UUID?, focusRequestID: UUID? = nil) {
+        let selectionChanged = self.selectedID != selectedID
+        if selectionChanged, let oldID = self.selectedID, let oldView = webViews[oldID] {
+            let wasOpen = InspectorController.isVisible(oldView)
+            inspectorWasOpen[oldID] = wasOpen
+            // Attached inspectors are sibling views, not children of WKWebView;
+            // hiding the web view alone leaves the previous tab's inspector up.
+            if wasOpen { InspectorController.invoke("close", on: oldView) }
+        }
+        if let oldID = self.selectedID, let oldView = webViews[oldID],
+           let responder = window?.firstResponder as? NSView,
+           responder === oldView || responder.isDescendant(of: oldView) {
+            savedFocus[oldID] = SavedFocus(responder)
+        }
         self.selectedID = selectedID
         let desiredIDs = Set(entries.map(\.id))
+        savedFocus = savedFocus.filter { desiredIDs.contains($0.key) }
+        inspectorWasOpen = inspectorWasOpen.filter { desiredIDs.contains($0.key) }
 
         for id in Array(webViews.keys) where !desiredIDs.contains(id) {
             removeWebView(id: id)
@@ -101,6 +122,9 @@ final class WebViewStackContainer: NSView {
             installIfAvailable(entry.webView, id: entry.id)
         }
         needsLayout = true
+        if selectionChanged, let selectedID, inspectorWasOpen[selectedID] == true {
+            InspectorController.open(webViews[selectedID])
+        }
 
         if let focusRequestID, focusRequestID != handledFocusRequestID {
             handledFocusRequestID = focusRequestID
@@ -145,6 +169,12 @@ final class WebViewStackContainer: NSView {
                 )
                 return
             }
+            // Preserve WebKit's internal responder (and its focused frame) when
+            // possible. Never force DOM focus onto body or synthesize a click.
+            if let responder = self.savedFocus[selectedID]?.view,
+               responder.window === window,
+               responder === webView || responder.isDescendant(of: webView),
+               window.makeFirstResponder(responder) { return }
             window.makeFirstResponder(webView)
         }
     }

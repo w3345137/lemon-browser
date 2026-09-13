@@ -51,6 +51,12 @@ private struct BookmarkNativeDragSurface: NSViewRepresentable {
 
 private final class BookmarkDragNSView: NSView, NSDraggingSource {
     override var mouseDownCanMoveWindow: Bool { false }
+
+    // 文件夹菜单使用不抢占主窗口焦点的子 NSPanel。若不接收 first mouse，
+    // 第一次单击只会激活面板，第二次才抵达 mouseUp/onClick。
+    // 拖动层覆盖整行，因此必须由它明确接收第一次点击。
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     var itemID: BookmarkItem.ID?
     var onClick: (() -> Void)?
     var onDrop: ((BookmarkItem.ID) -> Bool)?

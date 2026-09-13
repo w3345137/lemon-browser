@@ -189,6 +189,24 @@ enum TestMediaAudibilityLive {
             }
             precondition(waitFor(4) { disconnected }, "destination disconnect must retain native semantics")
         }
+        do {
+            let parent = BrowserTab(isPrivate: false, startURL: mutedURL, loadsImmediately: false)
+            parent.activate()
+            let child = BrowserTab(isPrivate: false)
+            let childView = child.adoptPopupWebView(configuration: parent.webView!.configuration)
+            let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 480), styleMask: [.titled], backing: .buffered, defer: false)
+            host.contentView = childView
+            host.orderFront(nil)
+            defer { child.tearDown(); parent.tearDown(); host.orderOut(nil); host.contentView = nil }
+            childView.loadFileURL(audibleURL, allowingReadAccessTo: fixtureRoot)
+            precondition(waitFor(8) { child.mediaState == .playing }, "popup audio did not reach child")
+            precondition(parent.mediaState != .playing, "popup audio leaked to opener")
+            parent.tearDown()
+            childView.evaluateJavaScript("document.querySelector('audio').pause()")
+            precondition(waitFor(5) { child.mediaState == .none }, "closing opener broke child pause reports")
+            childView.evaluateJavaScript("document.querySelector('audio').play();true")
+            precondition(waitFor(5) { child.mediaState == .playing }, "closing opener broke child play reports")
+        }
         print("media-audibility-live-tests=passed")
     }
 }

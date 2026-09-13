@@ -155,7 +155,7 @@ struct BrowserCommands: Commands {
             }
             Divider()
             Button("显示开发者工具") {
-                InspectorController.open(state?.selectedTab?.webView)
+                InspectorController.toggle(state?.selectedTab?.webView)
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
             .disabled(state?.selectedTab?.webView == nil)

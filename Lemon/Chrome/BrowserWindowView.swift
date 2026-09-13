@@ -25,6 +25,22 @@ struct BrowserWindowView: View {
                 FindBarView(state: state)
             }
             Divider().opacity(0.28)
+            if let notice = state.credentialNotice {
+                HStack(spacing: 10) {
+                    Image(systemName: "info.circle")
+                    Text(notice).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button { state.credentialNotice = nil } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭提示")
+                    .accessibilityLabel("关闭密码填充提示")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(nsColor: .controlBackgroundColor))
+            }
             HStack(spacing: 0) {
                 if state.isSidebarVisible {
                     SidebarView(state: state)

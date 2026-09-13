@@ -3,6 +3,28 @@ import Combine
 import OSLog
 import WebKit
 
+enum BrowserTabTitle {
+    static func display(documentTitle: String?, url: URL?) -> String {
+        if let title = documentTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return title
+        }
+        guard let url, url.absoluteString != "about:blank" else { return "新标签页" }
+        if url.isFileURL { return url.lastPathComponent.isEmpty ? "新标签页" : url.lastPathComponent }
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return "新标签页" }
+        // Do not expose embedded credentials in tab titles. Keep paths and query
+        // strings; only omit cosmetic URL components, not the destination.
+        parts.user = nil
+        parts.password = nil
+        if let host = parts.host, host.hasPrefix("www.") { parts.host = String(host.dropFirst(4)) }
+        if (parts.scheme == "https" && parts.port == 443) || (parts.scheme == "http" && parts.port == 80) { parts.port = nil }
+        if parts.path == "/" { parts.path = "" }
+        var result = parts.string ?? url.absoluteString
+        if result.hasPrefix("https://") { result.removeFirst(8) }
+        else if result.hasPrefix("http://") { result.removeFirst(7) }
+        return result.isEmpty ? "新标签页" : result
+    }
+}
+
 private let tencentMeetingPlaybackLog = Logger(
     subsystem: "com.workbuddy.lumen",
     category: "TencentMeetingPlayback"
@@ -97,7 +119,10 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         webView?.goForward()
     }
 
+    private var topResetNavigation: WKNavigation?
+
     func reload() {
+        savedScrollPosition = nil
         // 崩溃占位上的“重新载入”和菜单 ⌘R 走同一条路径；崩溃后
         // webView.reload() 会让 WebKit 重新拉起 WebContent 进程。
         let wasCrashed = webContentDidCrash
@@ -108,7 +133,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
             load(remembered)
             return
         }
-        webView?.reload()
+        topResetNavigation = webView?.reload()
     }
 
     func stopLoading() {
@@ -268,11 +293,12 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         let pageURL: URL?
     }
     private var pendingCredentialCapture: PendingCredentialCapture?
+    private(set) var navigationRevision = UUID()
     private var credentialCaptureWorkItem: DispatchWorkItem?
     /// 延迟后检查 SPA 表单是否已消失；经过时间不代表登录成功。
     static var credentialCaptureConfirmDelay: TimeInterval = 6
 
-    func fill(_ credential: WebCredential, password: String, completion: @escaping (Bool) -> Void) {
+    func fill(_ credential: WebCredential, password: String, automatic: Bool = false, completion: @escaping (Bool) -> Void) {
         guard let webView else {
             completion(false)
             return
@@ -280,7 +306,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         let token = UUID().uuidString
         pendingFillToken = token
         pendingFillCompletion = completion
-        let payload: [String: String] = [
+        let payload: [String: Any] = [
+            "automatic": automatic,
             "token": token,
             "username": credential.username,
             "password": password
@@ -405,7 +432,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
 
         localFileAccess = nil
         url = destination
-        title = URLInput.simplifiedHost(from: destination).isEmpty ? "新标签页" : URLInput.simplifiedHost(from: destination)
+        title = BrowserTabTitle.display(documentTitle: nil, url: destination)
         view.load(URLRequest(url: destination))
         FaviconService.load(for: destination) { [weak self] image in
             // 异步图标晚到时不允许覆盖已经导航到新地址的标签。
@@ -463,7 +490,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     func adoptPopupWebView(configuration: WKWebViewConfiguration) -> WKWebView {
         if let webView { return webView }
         isStartPage = false
-        title = "登录窗口"
+        title = BrowserTabTitle.display(documentTitle: nil, url: nil)
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.allowsBackForwardNavigationGestures = false
         view.allowsMagnification = true
@@ -475,6 +502,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     private func configure(_ view: WKWebView, registerScriptMessageHandlers: Bool = true) {
+        ScriptMessageProxy.owners.setObject(self, forKey: view)
         InspectorController.configure(view)
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -511,9 +539,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         }
         titleObserver = view.observe(\.title, options: [.new]) { [weak self] webView, _ in
             DispatchQueue.main.async {
-                if let title = webView.title, !title.isEmpty {
-                    self?.title = title
-                }
+                guard let self, self.webView === webView else { return }
+                self.title = BrowserTabTitle.display(documentTitle: webView.title, url: webView.url ?? self.url)
             }
         }
         urlObserver = view.observe(\.url, options: [.new]) { [weak self] webView, _ in
@@ -522,6 +549,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
                 // “重新载入”和会话持久化都依赖原 URL，nil 一律不覆盖已有值。
                 guard let newURL = webView.url else { return }
                 self?.url = newURL
+                self?.title = BrowserTabTitle.display(documentTitle: webView.title, url: newURL)
                 self?.handleURLChange(url: newURL)
             }
         }
@@ -549,20 +577,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         fullscreenExitCompletions.removeAll()
         webView?.navigationDelegate = nil
         webView?.uiDelegate = nil
-        if ownsScriptMessageHandlers {
-            webView?.configuration.userContentController.removeScriptMessageHandler(forName: "lemonHover")
-            webView?.configuration.userContentController.removeScriptMessageHandler(forName: CredentialBridge.handlerName)
-            webView?.configuration.userContentController.removeScriptMessageHandler(forName: MediaAudibilityBridge.handlerName)
-            webView?.configuration.userContentController.removeScriptMessageHandler(forName: MediaAudibilityBridge.handlerName, contentWorld: .defaultClient)
-            webView?.configuration.userContentController.removeScriptMessageHandler(
-                forName: "lemonExternalGesture",
-                contentWorld: .defaultClient
-            )
-            webView?.configuration.userContentController.removeScriptMessageHandler(
-                forName: TencentMeetingPlaybackBridge.handlerName,
-                contentWorld: .page
-            )
-        }
+        if let webView { ScriptMessageProxy.owners.removeObject(forKey: webView) }
+        // Shared popup controllers retain only a weak router. Keep their handlers
+        // alive for remaining child views rather than removing them with opener.
         ownsScriptMessageHandlers = false
         if let token = pendingFillToken {
             completeFill(token: token, ok: false)
@@ -590,14 +607,15 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         if let url = webView?.url {
             self.url = url
         }
-        if let title = webView?.title, !title.isEmpty {
-            self.title = title
+        if !isStartPage, !webContentDidCrash {
+            title = BrowserTabTitle.display(documentTitle: webView?.title, url: url)
         }
     }
 }
 
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        navigationRevision = UUID()
         loadingWasStopped = false
         // 任何新导航都说明 WebContent 进程已经恢复，清掉崩溃占位。
         webContentDidCrash = false
@@ -633,7 +651,20 @@ extension BrowserTab: WKNavigationDelegate {
             }
         }
         windowState?.tabDidFinishNavigation(self)
-        if let savedScrollPosition {
+        if let reset = topResetNavigation, reset === navigation {
+            topResetNavigation = nil
+            savedScrollPosition = nil
+            webView.evaluateJavaScript("""
+                (() => {
+                    window.scrollTo({top: 0, left: 0, behavior: 'instant'});
+                    for (const element of document.querySelectorAll('*')) {
+                        if (element.scrollTop !== 0) {
+                            element.scrollTo({top: 0, left: element.scrollLeft, behavior: 'instant'});
+                        }
+                    }
+                })()
+                """)
+        } else if let savedScrollPosition {
             self.savedScrollPosition = nil
             webView.evaluateJavaScript(
                 "window.scrollTo(\(savedScrollPosition.x), \(savedScrollPosition.y))"
@@ -796,6 +827,7 @@ extension BrowserTab: WKUIDelegate {
 /// 避免 WebView → configuration → UCC → BrowserTab → WebView 的保留环，
 /// 也避免弹窗标签继承的 configuration 把父标签一直留在内存里。
 private final class ScriptMessageProxy: NSObject, WKScriptMessageHandler {
+    static let owners = NSMapTable<WKWebView, BrowserTab>(keyOptions: .weakMemory, valueOptions: .weakMemory)
     weak var tab: BrowserTab?
 
     init(tab: BrowserTab) {
@@ -804,7 +836,9 @@ private final class ScriptMessageProxy: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        tab?.receiveScriptMessage(message)
+        guard let source = message.webView, let owner = Self.owners.object(forKey: source),
+              owner.webView === source else { return }
+        owner.receiveScriptMessage(message)
     }
 }
 
@@ -862,6 +896,12 @@ extension BrowserTab {
               let origin = body["origin"] as? String,
               CredentialStore.sharesSite(origin: origin, with: webView?.url) else { return }
 
+        if type == "formReady" {
+            // The JS notification carries no credentials. Native readiness probe
+            // still verifies visible, empty, same-origin form controls.
+            windowState?.tryAutomaticCredentialFill(self)
+            return
+        }
         // 跨域 iframe 的填充回执：只认与当前页同站、且令牌匹配的框架。
         if type == "fillResult" {
             if let token = body["token"] as? String, body["ok"] as? Bool == true {

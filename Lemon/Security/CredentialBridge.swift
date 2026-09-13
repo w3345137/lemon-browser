@@ -38,7 +38,14 @@ enum CredentialBridge {
         .map(id => document.getElementById(id)?.textContent || '');
       const hints = [input.name, input.id, input.placeholder, input.getAttribute('aria-label'), ...labels, ...labelledBy]
         .filter(Boolean).join(' ').toLowerCase();
-      return /captcha|otp|one.?time|verification.?code|verify.?code|validate.?code|valid.?code|check.?code|sms.?code|auth.?code|security.?code|dynamic.?password|验证码|校验码|短信码|动态密码|动态口令|一次性密码/.test(hints);
+      if (/captcha|otp|one.?time|verification.?code|verify.?code|validate.?code|valid.?code|check.?code|sms.?code|security.?code|dynamic.?password|验证码|校验码|短信码|动态密码|动态口令|一次性密码/.test(hints)) return true;
+      // Some IAM forms name their real password "authcode". Require positive
+      // password semantics before overriding this ambiguous field name; explicit
+      // OTP signals above always win, even for type=password.
+      const purpose = [input.placeholder, input.getAttribute('aria-label'),
+        input.getAttribute('data-i18n-placeholder'), ...labels, ...labelledBy].filter(Boolean).join(' ').toLowerCase();
+      if (input.type === 'password' && (autocomplete.split(/\s+/).includes('current-password') || /password|密码/.test(purpose))) return false;
+      return /auth.?code/.test(hints);
     };
     const markPassword = (input) => {
       if (input && input.type === 'password') seenPasswords.add(input);
@@ -107,11 +114,15 @@ enum CredentialBridge {
       const passwordInput = collectInputs(root).find(isPassword);
       if (!passwordInput) return false;
       const usernameInput = usernameFor(passwordInput, passwordInput.form || root);
+      if (typeof automatic !== 'undefined' && automatic) {
+        if (passwordInput.autocomplete === 'new-password' || !usernameInput ||
+            nativeValue(usernameInput) || nativeValue(passwordInput)) return false;
+      }
       // 360 中存在“仅密码”凭据。空账号代表不要改动账号框，不能把用户
       // 已经输入的账号清空。
       if (usernameInput && username.length > 0) setValue(usernameInput, username);
       setValue(passwordInput, password);
-      passwordInput.focus();
+      if (typeof automatic === 'undefined' || !automatic) passwordInput.focus();
       return true;
     };
     if (fillRoot(document)) return true;
@@ -126,7 +137,21 @@ enum CredentialBridge {
     /// 自包含的填充函数表达式：(username, password) => Bool。
     /// 用于主框架的独立求值兜底，不依赖捕获脚本是否已安装。
     static let fillFunctionSource =
-        "((username, password) => {\n" + sharedDOMHelpersSource + "\n" + fillBodySource + "\n})"
+        "((username, password, automatic = false) => {\n" + sharedDOMHelpersSource + "\n" + fillBodySource + "\n})"
+
+    static let automaticFillReadinessScript = "(() => {\n" + sharedDOMHelpersSource + #"""
+    const ready = root => collectInputs(root).some(p => {
+      if (!isPassword(p) || p.autocomplete === 'new-password' || nativeValue(p)) return false;
+      const u = usernameFor(p, p.form || root);
+      return !!u && !nativeValue(u);
+    });
+    if (ready(document)) return true;
+    for (const frame of document.querySelectorAll('iframe')) {
+      try { if (frame.contentDocument && ready(frame.contentDocument)) return true; } catch (_) {}
+    }
+    return false;
+    })()
+    """#
 
     /// 主框架填充调度脚本：先尝试同步直填（捕获脚本已安装时走快路径，
     /// 未安装时 eval 自包含逻辑），失败后向同站跨域 iframe 定向
@@ -146,9 +171,10 @@ enum CredentialBridge {
           if (!fill) { try { fill = eval(\(encodedFillSource)); } catch (_) {} }
           if (fill) {
             let ok = false;
-            try { ok = !!fill(payload.username, payload.password); } catch (_) {}
+            try { ok = !!fill(payload.username, payload.password, payload.automatic === true); } catch (_) {}
             if (ok) return { direct: true, targeted: [] };
           }
+          if (payload.automatic === true) return { direct: false, targeted: [] };
           const message = {
             __lemonFill: true,
             token: payload.token,
@@ -191,6 +217,28 @@ enum CredentialBridge {
           };
 
           let lastSent = '';
+          // DOM-ready is not form-ready: IAM reveals its iframe login controls
+          // after asynchronous initialization. Notify only on a ready transition.
+          let wasReady = false, readinessTimer = null;
+          const checkReadiness = () => {
+            readinessTimer = null;
+            const ready = collectInputs(document).some(p => {
+              if (!isPassword(p) || p.autocomplete === 'new-password' || nativeValue(p)) return false;
+              const u = usernameFor(p, p.form || document);
+              return !!u && !nativeValue(u);
+            });
+            if (ready && !wasReady) send({type: 'formReady', origin: location.origin});
+            wasReady = ready;
+          };
+          const scheduleReadiness = () => {
+            if (readinessTimer === null) readinessTimer = setTimeout(checkReadiness, 100);
+          };
+          new MutationObserver(scheduleReadiness).observe(document.documentElement,
+            {subtree: true, childList: true, attributes: true,
+             attributeFilter: ['class','style','hidden','type','autocomplete','disabled']});
+          document.addEventListener('input', scheduleReadiness, true);
+          window.addEventListener('pageshow', scheduleReadiness);
+          scheduleReadiness();
           window.__lemonHasCredentialChallenge = () => collectInputs(document)
             .some(input => isPassword(input) || isOneTimeCode(input));
           const capture = (root, reason) => {
@@ -247,7 +295,7 @@ enum CredentialBridge {
 
           // 填充入口：主框架可同步直调；跨域 iframe 由主框架 postMessage 到达。
           // 回执经 messageHandlers 返回，App 侧据此判断填充是否真正落地。
-          const performFill = (username, password) => {
+          const performFill = (username, password, automatic = false) => {
         """# + fillBodySource + #"""
           };
           window.__lemonPerformFill = performFill;

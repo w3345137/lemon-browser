@@ -4,7 +4,11 @@ import WebKit
 @MainActor
 final class CredentialMessages: NSObject, WKScriptMessageHandler {
     var submissions: [[String: Any]] = []
+    var readyCount = 0
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let body = message.body as? [String: Any], body["type"] as? String == "formReady" {
+            readyCount += 1
+        }
         if let body = message.body as? [String: Any], body["type"] as? String == "submit" {
             submissions.append(body)
         }
@@ -58,6 +62,21 @@ struct TestCredentialCodeFields {
         _ = try await view.evaluateJavaScript("document.getElementById('code').removeAttribute('autocomplete'); document.getElementById('code').value='987654'; document.getElementById('login').click()")
         try await Task.sleep(nanoseconds: 350_000_000)
         precondition(messages.submissions.count == 1, "Changing only CAPTCHA does not create a new credential")
+        _ = try await view.evaluateJavaScript("""
+        document.body.innerHTML='<input name="username" placeholder="手机号/用户名/主数据编码"><input name="authcode" type="password" placeholder="请输入密码" data-i18n-placeholder="inputPassword"><input name="verificationcode" placeholder="验证码">';
+        """)
+        let iamFilled = try await view.evaluateJavaScript("window.__lemonPerformFill('fixture-user','fixture-password')")
+        precondition(iamFilled as? Bool == true, "IAM authcode password must be recognized")
+        let correct = try await view.evaluateJavaScript("document.querySelector('[name=authcode]').value==='fixture-password' && document.querySelector('[name=username]').value==='fixture-user' && document.querySelector('[name=verificationcode]').value===''")
+        precondition(correct as? Bool == true)
+        let overwrite = try await view.evaluateJavaScript("window.__lemonPerformFill('other','other',true)")
+        precondition(overwrite as? Bool == false, "Automatic fill must not replace entered values")
+        _ = try await view.evaluateJavaScript("document.querySelector('[name=username]').value='';document.querySelector('[name=authcode]').value='';document.querySelector('[name=username]').focus()")
+        let automatic = try await view.evaluateJavaScript("window.__lemonPerformFill('fixture-user','fixture-password',true) && document.activeElement.name==='username'")
+        precondition(automatic as? Bool == true, "Automatic fill must preserve focus")
+        _ = try await view.evaluateJavaScript("document.querySelector('[name=authcode]').autocomplete='one-time-code';document.querySelector('[name=authcode]').value=''")
+        let otpFilled = try await view.evaluateJavaScript("window.__lemonPerformFill('fixture-user','fixture-password')")
+        precondition(otpFilled as? Bool == false)
         print("credential-code-fields-tests=passed")
     }
 }

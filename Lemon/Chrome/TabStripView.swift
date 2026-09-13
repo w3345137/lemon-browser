@@ -34,6 +34,29 @@ struct TabStripView: NSViewRepresentable {
         collectionView.onDropFeedbackCleared = { [weak coordinator = context.coordinator] in
             coordinator?.clearDropFeedback()
         }
+        collectionView.onSelectTab = { [weak coordinator = context.coordinator] index in
+            guard let coordinator, index < coordinator.tabs.count else { return }
+            coordinator.state.select(coordinator.tabs[index].id)
+        }
+        collectionView.onInteractionEnded = { [weak coordinator = context.coordinator] in
+            guard let state = coordinator?.state else { return }
+            state.select(state.selectedTabID)
+        }
+        collectionView.dragRange = { [weak coordinator = context.coordinator] index in
+            guard let coordinator, index < coordinator.tabs.count else { return 0..<0 }
+            let count = coordinator.tabs.prefix(while: \.isPinned).count
+            return coordinator.tabs[index].isPinned ? 0..<count : count..<coordinator.tabs.count
+        }
+        collectionView.onReorder = { [weak coordinator = context.coordinator] source, destination in
+            guard let coordinator, source != destination else { return }
+            let id = coordinator.tabs[source].id
+            var remaining = coordinator.tabs
+            remaining.remove(at: source)
+            let target = destination < remaining.count && remaining[destination].isPinned == coordinator.tabs[source].isPinned
+                ? remaining[destination].id : nil
+            _ = coordinator.state.moveTab(id, before: target)
+            coordinator.reloadTabs(coordinator.state.tabs)
+        }
 
         let scrollView = TabStripScrollView()
         scrollView.documentView = collectionView
@@ -68,7 +91,7 @@ struct TabStripView: NSViewRepresentable {
         var state: BrowserWindowState
         var layoutWidth: CGFloat
         fileprivate weak var collectionView: TabCollectionView?
-        private var tabs: [BrowserTab] = []
+        fileprivate var tabs: [BrowserTab] = []
         private var subscriptions: [BrowserTab.ID: AnyCancellable] = [:]
         private var contextTab: BrowserTab?
         private var draggingTabID: BrowserTab.ID?
@@ -79,6 +102,7 @@ struct TabStripView: NSViewRepresentable {
         }
 
         func reloadTabs(_ newTabs: [BrowserTab]) {
+            guard collectionView?.trackingTabDrag != true else { return }
             let oldIDs = tabs.map(\.id)
             let newIDs = newTabs.map(\.id)
             tabs = newTabs
@@ -233,6 +257,7 @@ struct TabStripView: NSViewRepresentable {
                 tab: tab,
                 selected: tab.id == state.selectedTabID,
                 dragging: tab.id == draggingTabID,
+                separator: indexPath.item + 1 < tabs.count && tabs[indexPath.item + 1].id != state.selectedTabID,
                 onClose: { [weak self, weak tab] in
                     guard let self, let tab else { return }
                     self.state.closeTab(tab.id)
@@ -399,6 +424,91 @@ private final class TabStripScrollView: NSScrollView {
 }
 
 fileprivate final class TabCollectionView: NSCollectionView {
+    var onSelectTab: ((Int) -> Void)?
+    var dragRange: ((Int) -> Range<Int>)?
+    var onReorder: ((Int, Int) -> Void)?
+    private(set) var trackingTabDrag = false
+    var onInteractionEnded: (() -> Void)?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        let down = convert(event.locationInWindow, from: nil)
+        guard let path = indexPathForItem(at: down), let window,
+              let dragged = item(at: path)?.view else {
+            super.mouseDown(with: event)
+            return
+        }
+        onSelectTab?(path.item)
+        // Run after AppKit's mouse tracking, including a canceled drag. Indexes
+        // may have changed during reordering, so restore the selected tab by ID.
+        defer { onInteractionEnded?() }
+        layoutSubtreeIfNeeded()
+        let count = numberOfItems(inSection: 0)
+        let frames = (0..<count).map {
+            layoutAttributesForItem(at: IndexPath(item: $0, section: 0))?.frame ?? .zero
+        }
+        let range = dragRange?(path.item) ?? 0..<count
+        guard !range.isEmpty else { return }
+        let original = frames[path.item]
+        let offset = down.x - original.minX
+        var destination = path.item
+        var started = false
+        var canceled = false
+        trackingTabDrag = true
+        defer {
+            trackingTabDrag = false
+            if started { NSCursor.pop() }
+            dragged.layer?.zPosition = 2
+        }
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown],
+                                           until: .distantFuture, inMode: .eventTracking, dequeue: true) {
+            if next.type == .keyDown {
+                if next.keyCode == 53 { canceled = true; break }
+                continue
+            }
+            if next.type == .leftMouseUp { break }
+            let point = convert(next.locationInWindow, from: nil)
+            if !started {
+                guard abs(point.x - down.x) >= 5 else { continue }
+                started = true
+                NSCursor.closedHand.push()
+            }
+            autoscroll(with: next)
+            let x = min(max(point.x - offset, frames[range.lowerBound].minX),
+                        frames[range.upperBound - 1].maxX - original.width)
+            let center = x + original.width / 2
+            // A small dead band prevents oscillation near a neighbour's midpoint.
+            let threshold = min(16, original.width * 0.07)
+            while destination + 1 < range.upperBound,
+                  center > (frames[destination].midX + frames[destination + 1].midX) / 2 + threshold { destination += 1 }
+            while destination > range.lowerBound,
+                  center < (frames[destination].midX + frames[destination - 1].midX) / 2 - threshold { destination -= 1 }
+            var order = Array(0..<count)
+            order.remove(at: path.item)
+            order.insert(path.item, at: destination)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                for (slot, index) in order.enumerated() where index != path.item {
+                    item(at: IndexPath(item: index, section: 0))?.view.animator().frame = frames[slot]
+                }
+            }
+            dragged.layer?.zPosition = 100
+            dragged.frame = NSRect(x: x, y: original.minY, width: original.width, height: original.height)
+        }
+        // Restore collection-owned geometry before committing the new model order.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            for index in 0..<count {
+                let view = item(at: IndexPath(item: index, section: 0))?.view
+                view?.layer?.removeAllAnimations()
+                view?.frame = frames[index]
+            }
+        }
+        trackingTabDrag = false
+        if started && !canceled { onReorder?(path.item, destination) }
+    }
+
     var contextMenuProvider: ((IndexPath) -> NSMenu?)?
     var onDropFeedbackCleared: (() -> Void)?
     private let insertionView = NSView()
@@ -452,7 +562,7 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
     static let identifier = NSUserInterfaceItemIdentifier("NativeTabCollectionItem")
     private let iconView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
-    private let closeButton = NSButton()
+    private let closeButton = TabCloseButton()
     private let audioButton = NSButton()
     private let loadingIndicator = NSProgressIndicator()
     private var hovering = false
@@ -524,7 +634,11 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
         playingAudio || mutedAudio
     }
 
-    func configure(tab: BrowserTab, selected: Bool, dragging: Bool, onClose: @escaping () -> Void, onToggleMute: @escaping () -> Void) {
+    func configure(tab: BrowserTab, selected: Bool, dragging: Bool, separator: Bool, onClose: @escaping () -> Void, onToggleMute: @escaping () -> Void) {
+        // A reused/moved cell may never receive mouseExited for its old frame.
+        (view as? TabCellView)?.synchronizeHover()
+        (view as? TabCellView)?.pinned = tab.isPinned
+        (view as? TabCellView)?.showsSeparator = separator && !tab.isPinned
         selectedState = selected
         draggingState = dragging
         pinnedState = tab.isPinned
@@ -614,9 +728,6 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
             self.titleField.textColor = self.selectedState ? .labelColor : NSColor.labelColor.withAlphaComponent(0.72)
             self.closeButton.isHidden = self.pinnedState || (!self.selectedState && !self.hovering)
             self.audioButton.isHidden = self.pinnedState || !self.showsAudioIndicator
-            self.closeButton.layer?.backgroundColor = self.hovering
-                ? NSColor.labelColor.withAlphaComponent(0.07).cgColor
-                : NSColor.clear.cgColor
             if self.privateState && self.selectedState {
                 self.view.layer?.borderColor = NSColor.systemPurple.withAlphaComponent(0.28).cgColor
             }
@@ -636,7 +747,29 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
     @objc private func toggleMute() { onToggleMute?() }
 }
 
+private final class TabCloseButton: NSButton {
+    private var hoverArea: NSTrackingArea?
+    override func updateTrackingAreas() {
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hoverArea = area
+        super.updateTrackingAreas()
+        let inside = window.map { bounds.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
+        updateHover(inside)
+    }
+    private func updateHover(_ inside: Bool) {
+        layer?.backgroundColor = (inside && !isHidden
+            ? NSColor.labelColor.withAlphaComponent(0.09) : .clear).cgColor
+    }
+    override func mouseEntered(with event: NSEvent) { updateHover(true) }
+    override func mouseExited(with event: NSEvent) { updateHover(false) }
+}
+
 private final class TabCellView: NSView {
+    var pinned = false { didSet { needsDisplay = true } }
+    var showsSeparator = false { didSet { needsDisplay = true } }
     var attached = false { didSet { needsDisplay = true } }
     var hovered = false { didSet { needsDisplay = true } }
     var onHoverChange: ((Bool) -> Void)?
@@ -644,18 +777,61 @@ private final class TabCellView: NSView {
 
     override var mouseDownCanMoveWindow: Bool { false }
 
+    private var lastReportedHover = false
+    private var keyObservers: [NSObjectProtocol] = []
+
+    func synchronizeHover() {
+        let inside: Bool
+        if let window, window.isKeyWindow, !isHiddenOrHasHiddenAncestor,
+           NSEvent.pressedMouseButtons & 1 == 0 {
+            let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+            inside = visibleRect.contains(point)
+        } else {
+            inside = false
+        }
+        guard inside != lastReportedHover else { return }
+        lastReportedHover = inside
+        onHoverChange?(inside)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        keyObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        keyObservers = []
+        if let window {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                keyObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.synchronizeHover() }
+                })
+            }
+        }
+        synchronizeHover()
+    }
+
+    deinit { keyObservers.forEach { NotificationCenter.default.removeObserver($0) } }
+
+    override func layout() {
+        super.layout()
+        synchronizeHover()
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         if hovered {
-            NSColor.labelColor.withAlphaComponent(0.065).setFill()
+            NSColor.labelColor.withAlphaComponent(0.035).setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 3), xRadius: 8, yRadius: 8).fill()
+        }
+        if !attached && !hovered && showsSeparator {
+            NSColor.labelColor.withAlphaComponent(0.14).setFill()
+            NSBezierPath(roundedRect: NSRect(x: bounds.width - 1, y: 11, width: 1, height: 14),
+                         xRadius: 0.5, yRadius: 0.5).fill()
         }
         guard attached else { return }
         // Chromium 式轮廓：顶部凸圆角，底部反向外扩，底边贴合工具栏。
         // 路径在 cell 内完成，避免滚动容器裁切两侧圆弧。
         let w = bounds.width, h = bounds.height
-        let foot: CGFloat = 4
-        let radius = min(CGFloat(9), (w - 2 * foot) / 2)
+        let foot: CGFloat = pinned ? 2 : 4
+        let radius = min(CGFloat(pinned ? 7 : 9), (w - 2 * foot) / 2)
         let k: CGFloat = 0.55228475
         let path = NSBezierPath()
         path.move(to: NSPoint(x: 0, y: 0))
@@ -690,8 +866,9 @@ private final class TabCellView: NSView {
         addTrackingArea(area)
         hoverArea = area
         super.updateTrackingAreas()
+        synchronizeHover()
     }
 
-    override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
-    override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
+    override func mouseEntered(with event: NSEvent) { synchronizeHover() }
+    override func mouseExited(with event: NSEvent) { synchronizeHover() }
 }
