@@ -129,6 +129,8 @@ LEMON_CODESIGN_IDENTITY="证书 SHA-1 或名称" ./Scripts/build-app.sh
 
 Lemon 源自一个已经长期使用的本地版本。为保证升级后现有网站登录态、Keychain 密码和浏览器资料继续可用，当前 Bundle ID 与部分本地存储命名空间保留了旧版内部标识。新安装不受影响。
 
+网站密码已迁移到 Lemon 自己的 Keychain 命名空间（`com.lemon.browser.web-password.v3`），读取旧命名空间密码时会自动完成迁移，不会要求重新输入。会话 Cookie 加密密钥同样使用新命名空间（`com.lemon.browser.session-cookie-key`），旧备份仍可尝试解密恢复。
+
 Lemon 使用系统 WebKit，因此不支持直接安装 Chromium 扩展；少数只针对 Chromium 测试的网站可能存在兼容差异。
 
 ## 参与开发
