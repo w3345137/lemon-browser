@@ -504,7 +504,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
 
     private func configure(_ view: WKWebView, registerScriptMessageHandlers: Bool = true) {
         ScriptMessageProxy.owners.setObject(self, forKey: view)
-        InspectorController.configure(view)
+        // 弹窗 WebView 同样允许 Safari“开发”菜单检查（公开 API）。
+        view.isInspectable = true
         view.navigationDelegate = self
         view.uiDelegate = self
         ownsScriptMessageHandlers = registerScriptMessageHandlers

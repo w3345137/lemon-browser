@@ -131,19 +131,7 @@ enum TestWebViewStack {
         container.sync(entries: entries, selectedID: secondID, focusRequestID: UUID())
         precondition(waitFor(1) { window.firstResponder === second }, "detached responder did not fall back")
 
-        InspectorController.open(second)
-        precondition(waitFor(5) { InspectorController.isVisible(second) })
-        container.sync(entries: entries, selectedID: firstID)
-        precondition(waitFor(5) { !InspectorController.isVisible(second) })
-        precondition(!InspectorController.isVisible(first), "B must not inherit A inspector")
-        container.sync(entries: entries, selectedID: secondID)
-        precondition(waitFor(5) { InspectorController.isVisible(second) }, "A inspector must restore")
-        InspectorController.toggle(second)
-        precondition(waitFor(5) { !InspectorController.isVisible(second) })
-        container.sync(entries: entries, selectedID: firstID)
-        container.sync(entries: entries, selectedID: secondID)
-        precondition(!InspectorController.isVisible(second), "Closed inspector must stay closed")
-
+        // 检查器已迁移到公开 API（isInspectable），不再随标签切换管理检查器窗口。
         container.sync(
             entries: [WebViewStackEntry(id: secondID, webView: second)],
             selectedID: secondID

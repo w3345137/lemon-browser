@@ -49,7 +49,9 @@ enum WebKitFactory {
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsMagnification = true
         webView.allowsLinkPreview = true
-        InspectorController.configure(webView)
+        // 公开 API：允许 Safari“开发”菜单检查本应用网页。
+        // 不使用 WebKit 私有 SPI，以满足 Mac App Store 审核要求。
+        webView.isInspectable = true
         return webView
     }
 }
@@ -88,17 +90,8 @@ final class WebViewStackContainer: NSView {
         init(_ view: NSView) { self.view = view }
     }
     private var savedFocus: [UUID: SavedFocus] = [:]
-    private var inspectorWasOpen: [UUID: Bool] = [:]
 
     func sync(entries: [WebViewStackEntry], selectedID: UUID?, focusRequestID: UUID? = nil) {
-        let selectionChanged = self.selectedID != selectedID
-        if selectionChanged, let oldID = self.selectedID, let oldView = webViews[oldID] {
-            let wasOpen = InspectorController.isVisible(oldView)
-            inspectorWasOpen[oldID] = wasOpen
-            // Attached inspectors are sibling views, not children of WKWebView;
-            // hiding the web view alone leaves the previous tab's inspector up.
-            if wasOpen { InspectorController.invoke("close", on: oldView) }
-        }
         if let oldID = self.selectedID, let oldView = webViews[oldID],
            let responder = window?.firstResponder as? NSView,
            responder === oldView || responder.isDescendant(of: oldView) {
@@ -107,7 +100,6 @@ final class WebViewStackContainer: NSView {
         self.selectedID = selectedID
         let desiredIDs = Set(entries.map(\.id))
         savedFocus = savedFocus.filter { desiredIDs.contains($0.key) }
-        inspectorWasOpen = inspectorWasOpen.filter { desiredIDs.contains($0.key) }
 
         for id in Array(webViews.keys) where !desiredIDs.contains(id) {
             removeWebView(id: id)
@@ -122,9 +114,6 @@ final class WebViewStackContainer: NSView {
             installIfAvailable(entry.webView, id: entry.id)
         }
         needsLayout = true
-        if selectionChanged, let selectedID, inspectorWasOpen[selectedID] == true {
-            InspectorController.open(webViews[selectedID])
-        }
 
         if let focusRequestID, focusRequestID != handledFocusRequestID {
             handledFocusRequestID = focusRequestID

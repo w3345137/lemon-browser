@@ -10,10 +10,25 @@ enum LemonIdentityMigration {
     static let legacySupportFolderName = "Lumen"
     private static let markerKey = "completedLemonIdentityMigration.v1"
 
+    /// App Store 沙盒下 homeDirectory 指向容器，且无法读取其他 App 的
+    /// Library/Containers 数据；文件合并只在非沙盒（本机开发/GitHub 分发）构建进行。
+    static var isSandboxed: Bool {
+        ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+    }
+
     static func runIfNeeded() {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: markerKey) else { return }
 
+        if !isSandboxed {
+            migrateLocalDataFromLegacyIdentity()
+        }
+        migrateDefaultBrowserIfNeeded()
+        defaults.set(true, forKey: markerKey)
+    }
+
+    private static func migrateLocalDataFromLegacyIdentity() {
+        let defaults = UserDefaults.standard
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser
         let library = home.appendingPathComponent("Library", isDirectory: true)
@@ -54,8 +69,6 @@ enum LemonIdentityMigration {
                 defaults.set(value, forKey: key)
             }
         }
-        migrateDefaultBrowserIfNeeded()
-        defaults.set(true, forKey: markerKey)
     }
 
     private static func mergeDirectory(from source: URL, to destination: URL) {
@@ -91,7 +104,16 @@ enum LemonIdentityMigration {
         for scheme in ["http", "https"] {
             guard let current = LSCopyDefaultHandlerForURLScheme(scheme as CFString)?.takeRetainedValue() as String?,
                   current == legacyBundleIdentifier else { continue }
-            _ = LSSetDefaultHandlerForURLScheme(scheme as CFString, bundleIdentifier as CFString)
+            if isSandboxed {
+                // 沙盒内 LSSetDefaultHandlerForURLScheme 不可用，
+                // 使用公开 NSWorkspace API 接管默认浏览器。
+                NSWorkspace.shared.setDefaultApplication(
+                    at: Bundle.main.bundleURL,
+                    toOpenURLsWithScheme: scheme
+                ) { _ in }
+            } else {
+                _ = LSSetDefaultHandlerForURLScheme(scheme as CFString, bundleIdentifier as CFString)
+            }
         }
     }
 }

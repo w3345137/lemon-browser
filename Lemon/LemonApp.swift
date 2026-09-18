@@ -154,21 +154,12 @@ struct BrowserCommands: Commands {
                 }
             }
             Divider()
-            Button("显示开发者工具") {
-                InspectorController.toggle(state?.selectedTab?.webView)
+            // 检查器走公开 API：网页 isInspectable = true，
+            // 在 Safari“开发”菜单中检查；不使用 WebKit 私有 SPI。
+            Button("开发者工具（Safari 开发菜单）") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Safari.app"))
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
-            .disabled(state?.selectedTab?.webView == nil)
-            Button("脚本控制台") {
-                InspectorController.open(state?.selectedTab?.webView, console: true)
-            }
-            .keyboardShortcut("j", modifiers: [.command, .option])
-            .disabled(state?.selectedTab?.webView == nil)
-            Button("选择页面元素") {
-                InspectorController.open(state?.selectedTab?.webView)
-                InspectorController.invoke("toggleElementSelection", on: state?.selectedTab?.webView)
-            }
-            .keyboardShortcut("c", modifiers: [.command, .option])
             .disabled(state?.selectedTab?.webView == nil)
         }
 
@@ -439,7 +430,10 @@ private final class DefaultBrowserManager: ObservableObject {
         isUpdating = true
         statusText = "正在更新系统默认浏览器…"
         hasError = false
-        LSRegisterURL(bundleURL as CFURL, true)
+        // 沙盒 App 由系统登记，LSRegisterURL 在沙盒内不可用也无必要。
+        if !LemonIdentityMigration.isSandboxed {
+            LSRegisterURL(bundleURL as CFURL, true)
+        }
         let htmlTypes = [UTType.html, UTType("public.xhtml")].compactMap { $0 }
         setDefault(bundleURL, schemes: ["http", "https"], types: htmlTypes, index: 0)
     }
@@ -494,7 +488,10 @@ private final class DefaultBrowserManager: ObservableObject {
     }
 
     private func setWithLaunchServices(scheme: String) -> Bool {
-        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
+        // 沙盒内 LaunchServices 直写默认处理器被禁止；回退路径由
+        // openDefaultBrowserSettings 引导用户到系统设置完成。
+        guard !LemonIdentityMigration.isSandboxed,
+              let bundleID = Bundle.main.bundleIdentifier else { return false }
         return LSSetDefaultHandlerForURLScheme(
             scheme as CFString,
             bundleID as CFString

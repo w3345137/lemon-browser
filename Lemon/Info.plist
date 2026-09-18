@@ -66,5 +66,8 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<!-- 会话 Cookie 使用 AES-GCM（豁免类别标准加密），上架时无需额外合规审查 -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
 </dict>
 </plist>

@@ -31,7 +31,6 @@ run_test() {
 }
 
 TAB_HARNESS=(
-  "$project_root/Lemon/Browser/InspectorController.swift"
   "$project_root/Scripts/Fixtures/TestBrowserTabStubs.swift"
   "$project_root/Lemon/Browser/BrowserTab.swift"
   "$project_root/Lemon/Browser/WebKitFactory.swift"
@@ -43,7 +42,6 @@ TAB_HARNESS=(
 
 # 真机级测试：真实 CredentialBridge / MediaAudibilityBridge / CredentialStore。
 LIVE_HARNESS=(
-  "$project_root/Lemon/Browser/InspectorController.swift"
   "$project_root/Scripts/Fixtures/TestBrowserTabLiveStubs.swift"
   "$project_root/Lemon/Browser/BrowserTab.swift"
   "$project_root/Lemon/Browser/WebKitFactory.swift"
@@ -117,6 +115,10 @@ run_test TestOmniboxRanker \
   "$project_root/Lemon/Browser/OmniboxSuggestion.swift" \
   "$project_root/Lemon/Browser/OmniboxRanker.swift"
 
+run_test TestSandboxEntitlements \
+  "$project_root/Scripts/TestSandboxEntitlements.swift" \
+  "$project_root/Scripts/Fixtures/AppStoreListingFixture.swift"
+
 run_test TestContentBlockerRules \
   "$project_root/Scripts/TestContentBlockerRules.swift" \
   "$project_root/Lemon/Privacy/ContentBlockerRules.swift"
@@ -126,7 +128,6 @@ run_test TestCredentialSite \
   "$project_root/Lemon/Security/CredentialStore.swift"
 
 run_test TestDownloadIntegrity \
-  "$project_root/Lemon/Browser/InspectorController.swift" \
   "$project_root/Scripts/TestDownloadIntegrity.swift" \
   "$project_root/Scripts/Fixtures/TestWebKitFactoryStubs.swift" \
   "$project_root/Lemon/Data/DownloadItem.swift" \
@@ -138,7 +139,6 @@ run_test TestDownloadIntegrity \
   "$project_root/Lemon/Browser/WangfeiPlaybackBridge.swift"
 
 run_test TestDownloadStore \
-  "$project_root/Lemon/Browser/InspectorController.swift" \
   "$project_root/Scripts/TestDownloadStore.swift" \
   "$project_root/Scripts/Fixtures/TestWebKitFactoryStubs.swift" \
   "$project_root/Lemon/Data/DownloadItem.swift" \
@@ -154,7 +154,6 @@ run_test TestDownloadLive \
   "$project_root/Scripts/Fixtures/TestWebKitFactoryStubs.swift" \
   "$project_root/Lemon/Data/DownloadItem.swift" \
   "$project_root/Lemon/Data/DownloadStore.swift" \
-  "$project_root/Lemon/Browser/InspectorController.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift" \
@@ -168,10 +167,6 @@ run_test TestSessionCookieVault \
 run_test TestSessionCookiePersistence \
   "$project_root/Scripts/TestSessionCookiePersistence.swift" \
   "$project_root/Lemon/Security/SessionCookieVault.swift"
-
-run_test TestInspectorLive \
-  "$project_root/Scripts/TestInspectorLive.swift" \
-  "$project_root/Lemon/Browser/InspectorController.swift"
 
 run_test TestSessionImportRequestPolicy \
   "$project_root/Scripts/TestSessionImportRequestPolicy.swift" \
@@ -198,7 +193,6 @@ run_test TestWangfeiPlayback \
   "$project_root/Lemon/Browser/WangfeiPlaybackBridge.swift"
 
 run_test TestWebViewStack \
-  "$project_root/Lemon/Browser/InspectorController.swift" \
   "$project_root/Scripts/TestWebViewStack.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \

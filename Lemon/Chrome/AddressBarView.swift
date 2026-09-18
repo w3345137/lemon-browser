@@ -90,7 +90,9 @@ private struct AddressBarContent: View {
                 }
                 Divider()
                 Button("查找…") { state.toggleFindBar() }
-                Button("开发者工具") { InspectorController.open(tab.webView) }
+                Button("开发者工具（Safari 开发菜单）") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Safari.app"))
+                }
                     .disabled(tab.webView == nil)
                 Button("设置…") { openSettings() }
             } label: {
