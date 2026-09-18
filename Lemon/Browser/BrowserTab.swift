@@ -26,7 +26,7 @@ enum BrowserTabTitle {
 }
 
 private let tencentMeetingPlaybackLog = Logger(
-    subsystem: "com.workbuddy.lumen",
+    subsystem: "com.lemon.browser",
     category: "TencentMeetingPlayback"
 )
 
@@ -91,6 +91,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     private var lastExternalApplicationOpen: (scheme: String, date: Date)?
     private var tencentLiveActivity: NSObjectProtocol?
     private(set) var tencentLivePlaybackMode = ""
+    private var pageDialog: PageDialogPresenter?
 
     weak var windowState: BrowserWindowState?
 
@@ -559,7 +560,16 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
 
     func tearDown() {
         lifecycleState = .discarded
+        dismissPageDialog()
         releaseWebView()
+    }
+
+    /// Page JavaScript dialogs belong to this tab, not to the application.
+    /// Closing the tab must dismiss the dialog first and must never require a
+    /// separate click on the page-controlled prompt.
+    func dismissPageDialog() {
+        pageDialog?.dismiss(response: .cancel)
+        pageDialog = nil
     }
 
     private func releaseWebView() {
@@ -802,24 +812,197 @@ extension BrowserTab: WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "好")
-        alert.runModal()
+        _ = await presentPageDialog(message: message, confirm: false)
     }
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async -> Bool {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "好")
-        alert.addButton(withTitle: "取消")
-        return alert.runModal() == .alertFirstButtonReturn
+        await presentPageDialog(message: message, confirm: true) == .alertFirstButtonReturn
+    }
+
+    private func presentPageDialog(message: String, confirm: Bool) async -> NSApplication.ModalResponse {
+        // WebKit serializes JavaScript dialogs for a page. Still resolve any
+        // stale presenter defensively so no continuation survives navigation
+        // teardown or a WebContent process replacement.
+        dismissPageDialog()
+        guard let parentWindow = webView?.window else { return .cancel }
+        return await withCheckedContinuation { continuation in
+            let presenter = PageDialogPresenter(
+                title: title,
+                message: message,
+                confirm: confirm,
+                parentWindow: parentWindow,
+                onCloseTab: { [weak self] in
+                    guard let self else { return }
+                    self.windowState?.closeTab(self.id)
+                }
+            ) { [weak self] response in
+                self?.pageDialog = nil
+                continuation.resume(returning: response)
+            }
+            pageDialog = presenter
+            presenter.show()
+        }
     }
 
     func webViewDidClose(_ webView: WKWebView) {
         windowState?.closeTab(id)
+    }
+}
+
+/// NSAlert.runModal() creates an application-modal event loop: Cmd-W and tab
+/// controls reach the alert before the browser. Chromium instead scopes page
+/// dialogs to their tab. This presenter keeps NSAlert's native appearance but
+/// displays its window as a non-modal child of the browser window.
+@MainActor
+private final class PageDialogPresenter: NSObject {
+    private let panel: PageDialogPanel
+    private weak var parentWindow: NSWindow?
+    private var completion: ((NSApplication.ModalResponse) -> Void)?
+
+    init(
+        title: String,
+        message: String,
+        confirm: Bool,
+        parentWindow: NSWindow,
+        onCloseTab: @escaping () -> Void,
+        completion: @escaping (NSApplication.ModalResponse) -> Void
+    ) {
+        self.panel = PageDialogPanel(onCloseTab: onCloseTab)
+        self.parentWindow = parentWindow
+        self.completion = completion
+        super.init()
+        configureContent(title: title, message: message, confirm: confirm)
+    }
+
+    func show() {
+        guard let parentWindow else {
+            resolve(.cancel)
+            return
+        }
+        parentWindow.addChildWindow(panel, ordered: .above)
+        let parentFrame = parentWindow.frame
+        let dialogSize = panel.frame.size
+        panel.setFrameOrigin(NSPoint(
+            x: parentFrame.midX - dialogSize.width / 2,
+            y: parentFrame.midY - dialogSize.height / 2
+        ))
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    func dismiss(response: NSApplication.ModalResponse) {
+        resolve(response)
+    }
+
+    @objc private func accept() {
+        resolve(.alertFirstButtonReturn)
+    }
+
+    @objc private func cancel() {
+        resolve(.cancel)
+    }
+
+    private func resolve(_ response: NSApplication.ModalResponse) {
+        guard let completion else { return }
+        self.completion = nil
+        parentWindow?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        completion(response)
+    }
+
+    private func configureContent(title: String, message: String, confirm: Bool) {
+        let effect = NSVisualEffectView(frame: panel.contentView!.bounds)
+        effect.autoresizingMask = [.width, .height]
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 16
+        effect.layer?.masksToBounds = true
+
+        let icon = NSImageView(image: NSApp.applicationIconImage)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 48),
+            icon.heightAnchor.constraint(equalToConstant: 48)
+        ])
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.alignment = .center
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.lineBreakMode = .byTruncatingTail
+
+        let messageLabel = NSTextField(wrappingLabelWithString: message)
+        messageLabel.font = .systemFont(ofSize: 13)
+        messageLabel.alignment = .center
+        messageLabel.maximumNumberOfLines = 4
+
+        let acceptButton = NSButton(title: "好", target: self, action: #selector(accept))
+        acceptButton.keyEquivalent = "\r"
+        acceptButton.bezelStyle = .rounded
+
+        let buttons: NSStackView
+        if confirm {
+            let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancel))
+            cancelButton.keyEquivalent = "\u{1b}"
+            cancelButton.bezelStyle = .rounded
+            buttons = NSStackView(views: [cancelButton, acceptButton])
+        } else {
+            buttons = NSStackView(views: [acceptButton])
+        }
+        buttons.orientation = .horizontal
+        buttons.distribution = .fillEqually
+        buttons.spacing = 10
+
+        let stack = NSStackView(views: [icon, titleLabel, messageLabel, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 12
+        stack.setCustomSpacing(8, after: titleLabel)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(stack)
+        panel.contentView = effect
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 28),
+            stack.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -28),
+            stack.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
+            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            buttons.heightAnchor.constraint(equalToConstant: 32)
+        ])
+    }
+}
+
+@MainActor
+private final class PageDialogPanel: NSPanel {
+    private let onCloseTab: () -> Void
+
+    init(onCloseTab: @escaping () -> Void) {
+        self.onCloseTab = onCloseTab
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 250),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        level = .floating
+        collectionBehavior = [.transient, .fullScreenAuxiliary]
+        preventsApplicationTerminationWhenModal = false
+    }
+
+    override var canBecomeKey: Bool { true }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "w" {
+            onCloseTab()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 

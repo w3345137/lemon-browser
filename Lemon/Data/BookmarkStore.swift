@@ -50,7 +50,7 @@ final class BookmarkStore: ObservableObject {
             )
         } else {
             let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                .appendingPathComponent("Lumen", isDirectory: true) // Legacy namespace preserves existing profiles.
+                .appendingPathComponent("Lemon", isDirectory: true)
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             url = folder.appendingPathComponent("bookmarks.json")
         }

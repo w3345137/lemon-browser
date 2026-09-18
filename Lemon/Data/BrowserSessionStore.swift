@@ -78,7 +78,7 @@ enum BrowserSessionStore {
         let folder = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!.appendingPathComponent("Lumen", isDirectory: true) // Legacy namespace preserves existing profiles.
+        ).first!.appendingPathComponent("Lemon", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder.appendingPathComponent("session.json")
     }

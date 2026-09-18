@@ -37,8 +37,8 @@ final class CredentialStore: ObservableObject {
     // requirement. Early development builds used ad-hoc signatures, which
     // caused macOS to request access separately for every legacy item after
     // each rebuild.
-    // Keep the legacy Keychain service so the product rename does not orphan saved passwords.
-    static let service = "com.workbuddy.lumen.web-password.v2"
+    static let service = "com.lemon.browser.web-password.v3"
+    static let legacyService = "com.workbuddy.lumen.web-password.v2"
 
     @Published private(set) var credentials: [WebCredential] = []
 
@@ -91,15 +91,30 @@ final class CredentialStore: ObservableObject {
     }
 
     func password(for credential: WebCredential) throws -> String {
+        if let password = try password(for: credential, service: Self.service) {
+            return password
+        }
+        if let password = try password(for: credential, service: Self.legacyService) {
+            // Lazy migration avoids a launch-time Keychain prompt storm. Once
+            // the user allows this legacy item, future reads use Lemon's new
+            // namespace and no longer depend on the old bundle identity.
+            try? save(scope: credential.scope, username: credential.username, password: password, refreshesCredentials: false)
+            return password
+        }
+        throw CredentialStoreError.keychain(errSecItemNotFound)
+    }
+
+    private func password(for credential: WebCredential, service: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: credential.id,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw CredentialStoreError.keychain(status) }
         guard let data = result as? Data, let password = String(data: data, encoding: .utf8) else {
             throw CredentialStoreError.keychain(errSecDecode)
@@ -108,37 +123,40 @@ final class CredentialStore: ObservableObject {
     }
 
     func delete(_ credential: WebCredential) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: credential.id
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw CredentialStoreError.keychain(status)
+        for service in [Self.service, Self.legacyService] {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: credential.id
+            ]
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw CredentialStoreError.keychain(status)
+            }
         }
         refresh()
     }
 
     func refresh() {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitAll
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess else {
-            credentials = []
-            return
+        var found: [String: WebCredential] = [:]
+        for service in [Self.service, Self.legacyService] {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecReturnAttributes as String: true,
+                kSecMatchLimit as String: kSecMatchLimitAll
+            ]
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            guard status == errSecSuccess || status == errSecItemNotFound else { continue }
+            let rows = result as? [[String: Any]] ?? []
+            for attributes in rows {
+                guard let account = attributes[kSecAttrAccount as String] as? String,
+                      let credential = Self.parseAccountKey(account) else { continue }
+                found[credential.id] = credential
+            }
         }
-
-        let rows = result as? [[String: Any]] ?? []
-        credentials = rows.compactMap { attributes in
-            guard let account = attributes[kSecAttrAccount as String] as? String else { return nil }
-            return Self.parseAccountKey(account)
-        }
+        credentials = Array(found.values)
         .sorted {
             if $0.displayHost == $1.displayHost {
                 return $0.username.localizedCaseInsensitiveCompare($1.username) == .orderedAscending

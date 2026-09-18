@@ -23,7 +23,7 @@ for line in ps.splitlines():
     label = comm.split("/")[-1]
     related = (
         needle.lower() in comm.lower()
-        or (needle == "Lemon" and "com.workbuddy.lumen" in comm.lower())
+        or (needle == "Lemon" and "com.lemon.browser" in comm.lower())
         or (needle == "Safari" and label in {"Safari", "com.apple.WebKit.WebContent", "com.apple.WebKit.GPU", "com.apple.WebKit.Networking"})
     )
     if needle == "Safari" and "Lemon" in comm:

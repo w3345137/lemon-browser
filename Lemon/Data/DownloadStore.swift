@@ -24,7 +24,7 @@ final class DownloadStore: NSObject, ObservableObject {
         self.persistent = persistent
         self.destinationFolder = downloadsFolder ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!.resolvingSymlinksInPath()
         let folder = persistent ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Lumen", isDirectory: true) // Legacy namespace preserves existing profiles.
+            .appendingPathComponent("Lemon", isDirectory: true)
             .appendingPathComponent("Downloads", isDirectory: true)
             : FileManager.default.temporaryDirectory.appendingPathComponent("lemon-private-downloads-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

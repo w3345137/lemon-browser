@@ -66,7 +66,7 @@ final class SessionImportServer: ObservableObject {
                 }
             }
         }
-        listener.start(queue: DispatchQueue(label: "com.workbuddy.lemon.session-import"))
+        listener.start(queue: DispatchQueue(label: "com.lemon.browser.session-import"))
     }
 
     func stop() {
@@ -76,7 +76,7 @@ final class SessionImportServer: ObservableObject {
     }
 
     private func accept(_ connection: NWConnection) {
-        connection.start(queue: DispatchQueue(label: "com.workbuddy.lemon.session-import.connection"))
+        connection.start(queue: DispatchQueue(label: "com.lemon.browser.session-import.connection"))
         receive(on: connection, buffer: Data())
     }
 

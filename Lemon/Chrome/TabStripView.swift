@@ -385,7 +385,7 @@ struct TabStripView: NSViewRepresentable {
 }
 
 private extension NSPasteboard.PasteboardType {
-    static let lemonTabID = NSPasteboard.PasteboardType("com.workbuddy.lemon.tab-id")
+    static let lemonTabID = NSPasteboard.PasteboardType("com.lemon.browser.tab-id")
 }
 
 private final class TabStripScrollView: NSScrollView {

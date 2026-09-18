@@ -15,14 +15,16 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
     // v3 uses Lemon's stable signing identity. The previous ad-hoc-signed key
     // can become unreadable after an update, so it is attempted silently and
     // never allowed to block a fresh archive.
-    private static let keyService = "com.workbuddy.lemon.session-cookie-key"
+    private static let keyService = "com.lemon.browser.session-cookie-key"
     private static let keyAccount = "vault-key.v3"
+    private static let migratedKeyService = "com.workbuddy.lemon.session-cookie-key"
+    private static let migratedKeyAccount = "vault-key.v3"
     private static let legacyKeyService = "com.workbuddy.lumen.session-cookie-key"
     private static let legacyKeyAccount = "vault-key.v2"
     private let cookieStore: WKHTTPCookieStore
     private let customArchiveURL: URL?
     private let customLegacyArchiveURL: URL?
-    private let storageQueue = DispatchQueue(label: "com.workbuddy.lemon.session-cookie-vault")
+    private let storageQueue = DispatchQueue(label: "com.lemon.browser.session-cookie-vault")
     private var isPreparing = false
     private var isPrepared = false
     private var pendingCompletions: [() -> Void] = []
@@ -174,7 +176,7 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
         let folder = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!.appendingPathComponent("Lumen", isDirectory: true)
+        ).first!.appendingPathComponent("Lemon", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder.appendingPathComponent("session-cookies.v2.enc")
     }
@@ -257,6 +259,13 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
             cachedKey = key
             return key
         }
+        if status == errSecItemNotFound,
+           let migrated = keyData(service: Self.migratedKeyService, account: Self.migratedKeyAccount),
+           installCurrentKey(migrated) {
+            let key = SymmetricKey(data: migrated)
+            cachedKey = key
+            return key
+        }
         guard createIfMissing, status == errSecItemNotFound else {
             return nil
         }
@@ -266,6 +275,13 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
             return nil
         }
         let data = Data(bytes)
+        guard installCurrentKey(data) else { return nil }
+        let key = SymmetricKey(data: data)
+        cachedKey = key
+        return key
+    }
+
+    private func installCurrentKey(_ data: Data) -> Bool {
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keyService,
@@ -275,13 +291,21 @@ final class SessionCookieVault: NSObject, ObservableObject, WKHTTPCookieStoreObs
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        if addStatus == errSecDuplicateItem {
-            return encryptionKey(createIfMissing: false)
-        }
-        guard addStatus == errSecSuccess else { return nil }
-        let key = SymmetricKey(data: data)
-        cachedKey = key
-        return key
+        return addStatus == errSecSuccess || addStatus == errSecDuplicateItem
+    }
+
+    private func keyData(service: String, account: String) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data, data.count == 32 else { return nil }
+        return data
     }
 
     private func legacyEncryptionKey() -> SymmetricKey? {

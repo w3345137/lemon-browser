@@ -8,7 +8,7 @@ struct LemonApp: App {
     @NSApplicationDelegateAdaptor(LemonAppDelegate.self) private var appDelegate
 
     init() {
-        LegacySandboxDataMigration.runIfNeeded()
+        LemonIdentityMigration.runIfNeeded()
         ContentBlocker.shared.prepare()
     }
 

@@ -3,8 +3,12 @@ import Carbon
 import Foundation
 
 @MainActor
-enum LegacySandboxDataMigration {
-    private static let markerKey = "completedUnsandboxedDataMigration.v1"
+enum LemonIdentityMigration {
+    static let bundleIdentifier = "com.lemon.browser"
+    static let legacyBundleIdentifier = "com.workbuddy.lumen"
+    static let supportFolderName = "Lemon"
+    static let legacySupportFolderName = "Lumen"
+    private static let markerKey = "completedLemonIdentityMigration.v1"
 
     static func runIfNeeded() {
         let defaults = UserDefaults.standard
@@ -12,68 +16,83 @@ enum LegacySandboxDataMigration {
 
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser
-        let containerLibrary = home
-            .appendingPathComponent("Library/Containers/com.workbuddy.lumen/Data/Library", isDirectory: true)
-        guard fileManager.fileExists(atPath: containerLibrary.path) else {
-            defaults.set(true, forKey: markerKey)
-            return
-        }
+        let library = home.appendingPathComponent("Library", isDirectory: true)
+        let containerLibrary = library
+            .appendingPathComponent("Containers/\(legacyBundleIdentifier)/Data/Library", isDirectory: true)
 
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "-")
-        let backupRoot = home
-            .appendingPathComponent("Library/Application Support/Lemon Migration Backup \(timestamp)", isDirectory: true)
-        try? fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
+        let oldSupport = library.appendingPathComponent("Application Support/\(legacySupportFolderName)", isDirectory: true)
+        let newSupport = library.appendingPathComponent("Application Support/\(supportFolderName)", isDirectory: true)
+        mergeDirectory(from: containerLibrary.appendingPathComponent("Application Support/\(legacySupportFolderName)"), to: oldSupport)
+        mergeDirectory(from: oldSupport, to: newSupport)
 
-        migrateDirectory(
-            from: containerLibrary.appendingPathComponent("Application Support/Lumen", isDirectory: true),
-            to: home.appendingPathComponent("Library/Application Support/Lumen", isDirectory: true),
-            backupRoot: backupRoot,
-            backupName: "Application Support"
-        )
-        migrateDirectory(
-            from: containerLibrary.appendingPathComponent("WebKit", isDirectory: true),
-            to: home.appendingPathComponent("Library/WebKit/com.workbuddy.lumen", isDirectory: true),
-            backupRoot: backupRoot,
-            backupName: "WebKit"
-        )
-        migrateDirectory(
-            from: containerLibrary.appendingPathComponent("HTTPStorages/com.workbuddy.lumen", isDirectory: true),
-            to: home.appendingPathComponent("Library/HTTPStorages/com.workbuddy.lumen", isDirectory: true),
-            backupRoot: backupRoot,
-            backupName: "HTTPStorages"
+        let oldWebKit = library.appendingPathComponent("WebKit/\(legacyBundleIdentifier)", isDirectory: true)
+        let newWebKit = library.appendingPathComponent("WebKit/\(bundleIdentifier)", isDirectory: true)
+        mergeDirectory(from: containerLibrary.appendingPathComponent("WebKit"), to: oldWebKit)
+        mergeDirectory(from: oldWebKit, to: newWebKit)
+
+        let oldHTTP = library.appendingPathComponent("HTTPStorages/\(legacyBundleIdentifier)", isDirectory: true)
+        let newHTTP = library.appendingPathComponent("HTTPStorages/\(bundleIdentifier)", isDirectory: true)
+        mergeDirectory(from: containerLibrary.appendingPathComponent("HTTPStorages/\(legacyBundleIdentifier)"), to: oldHTTP)
+        mergeDirectory(from: oldHTTP, to: newHTTP)
+        copyFileIfMissing(
+            from: library.appendingPathComponent("HTTPStorages/\(legacyBundleIdentifier).binarycookies"),
+            to: library.appendingPathComponent("HTTPStorages/\(bundleIdentifier).binarycookies")
         )
 
         let preferencesURL = containerLibrary
-            .appendingPathComponent("Preferences/com.workbuddy.lumen.plist")
+            .appendingPathComponent("Preferences/\(legacyBundleIdentifier).plist")
         if let data = try? Data(contentsOf: preferencesURL),
            let values = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] {
             for (key, value) in values {
                 defaults.set(value, forKey: key)
             }
         }
+        let oldPreferencesURL = library.appendingPathComponent("Preferences/\(legacyBundleIdentifier).plist")
+        if let data = try? Data(contentsOf: oldPreferencesURL),
+           let values = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] {
+            for (key, value) in values where defaults.object(forKey: key) == nil {
+                defaults.set(value, forKey: key)
+            }
+        }
+        migrateDefaultBrowserIfNeeded()
         defaults.set(true, forKey: markerKey)
     }
 
-    private static func migrateDirectory(
-        from source: URL,
-        to destination: URL,
-        backupRoot: URL,
-        backupName: String
-    ) {
+    private static func mergeDirectory(from source: URL, to destination: URL) {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: source.path) else { return }
-        try? fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        if fileManager.fileExists(atPath: destination.path) {
-            try? fileManager.moveItem(
-                at: destination,
-                to: backupRoot.appendingPathComponent(backupName, isDirectory: true)
-            )
+        try? fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        guard let enumerator = fileManager.enumerator(
+            at: source,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for case let item as URL in enumerator {
+            let relative = item.path.replacingOccurrences(of: source.path + "/", with: "")
+            let target = destination.appendingPathComponent(relative)
+            let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if isDirectory {
+                try? fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+            } else {
+                copyFileIfMissing(from: item, to: target)
+            }
         }
+    }
+
+    private static func copyFileIfMissing(from source: URL, to destination: URL) {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: source.path),
+              !fileManager.fileExists(atPath: destination.path) else { return }
+        try? fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? fileManager.copyItem(at: source, to: destination)
+    }
+
+    private static func migrateDefaultBrowserIfNeeded() {
+        for scheme in ["http", "https"] {
+            guard let current = LSCopyDefaultHandlerForURLScheme(scheme as CFString)?.takeRetainedValue() as String?,
+                  current == legacyBundleIdentifier else { continue }
+            _ = LSSetDefaultHandlerForURLScheme(scheme as CFString, bundleIdentifier as CFString)
+        }
     }
 }
 

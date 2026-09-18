@@ -256,6 +256,9 @@ final class BrowserWindowState: NSObject, ObservableObject {
 
     func closeTab(_ id: BrowserTab.ID) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        // Browser chrome has priority over page-controlled dialogs. This also
+        // resumes a pending JavaScript confirm with the safe `false` result.
+        tab.dismissPageDialog()
         if tab.isElementFullscreenActive {
             guard pendingCloseTabIDs.insert(id).inserted else { return }
             tab.exitElementFullscreenIfNeeded { [weak self] in

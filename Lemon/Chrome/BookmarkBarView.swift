@@ -900,7 +900,7 @@ private struct NativeBookmarkBar: NSViewRepresentable {
 }
 
 private extension NSPasteboard.PasteboardType {
-    static let lemonNativeBookmark = NSPasteboard.PasteboardType("com.workbuddy.lemon.native-bookmark-id")
+    static let lemonNativeBookmark = NSPasteboard.PasteboardType("com.lemon.browser.native-bookmark-id")
 }
 
 fileprivate final class BookmarkCollectionView: NSCollectionView {

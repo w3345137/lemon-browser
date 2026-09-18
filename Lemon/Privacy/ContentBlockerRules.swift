@@ -1,7 +1,7 @@
 import Foundation
 
 enum ContentBlockerRules {
-    static let identifier = "com.workbuddy.lemon.ads.v1"
+    static let identifier = "com.lemon.browser.ads.v1"
 
     static let blockedURLFilters = [
         "doubleclick\\.net",
