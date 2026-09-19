@@ -305,6 +305,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         let copy = BrowserTab(isPrivate: isPrivate, startURL: url)
         copy.windowState = self
         insert(copy, after: index, select: true)
+        requestPageFocus()
     }
 
     func closeOtherTabs(keeping id: BrowserTab.ID) {
@@ -360,6 +361,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
             tab.isPinned = true
         }
         insert(tab, after: selectedIndex, select: true)
+        requestPageFocus()
     }
 
     func moveTab(from offsets: IndexSet, to destination: Int) {
@@ -689,10 +691,14 @@ final class BrowserWindowState: NSObject, ObservableObject {
     /// 查找栏的显隐统一从这里走：隐藏时同步清掉查询词和页面高亮，
     /// 避免各入口（关闭按钮、⌘F、菜单）各自处理造成高亮残留。
     func setFindBar(visible: Bool) {
+        let wasVisible = isFindBarVisible
         isFindBarVisible = visible
         if !visible {
             findQuery = ""
             selectedTab?.clearFindHighlights()
+            // 输入框随查找栏一起移除后，键盘焦点会丢给窗口本身，空格等按键
+            // 到不了页面；关闭时把焦点还给网页。
+            if wasVisible { requestPageFocus() }
         }
     }
 

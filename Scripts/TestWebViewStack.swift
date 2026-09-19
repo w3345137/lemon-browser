@@ -131,6 +131,41 @@ enum TestWebViewStack {
         container.sync(entries: entries, selectedID: secondID, focusRequestID: UUID())
         precondition(waitFor(1) { window.firstResponder === second }, "detached responder did not fall back")
 
+        // 窗口重新成为 key（⌘Tab 回浏览器、点 Dock 图标、点 chrome 激活）时：
+        // 焦点在 chrome 非文本控件上 → 必须还给选中页的 WKWebView，
+        // 否则空格等按键到不了页面，视频空格暂停失效。
+        let chromeProbe = FocusProbe(frame: NSRect(x: 0, y: 610, width: 10, height: 10))
+        root.addSubview(chromeProbe)
+        precondition(window.makeFirstResponder(chromeProbe))
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        precondition(waitFor(1) { window.firstResponder === second },
+            "window-key activation did not return focus to the selected page")
+
+        // 页面已持有焦点时重激活：不得重置 WebKit 内部 responder / DOM 焦点。
+        second.addSubview(probe)
+        precondition(window.makeFirstResponder(probe))
+        container.sync(entries: entries, selectedID: secondID)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        precondition(window.firstResponder === probe, "page focus was reset on window activation")
+
+        // WebKit 内部 responder 已被记住时，重激活要恢复它（保住 focused frame），
+        // 而不是退化成 WKWebView 本身。
+        precondition(window.makeFirstResponder(chromeProbe))
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        precondition(waitFor(1) { window.firstResponder === probe },
+            "window-key activation did not restore the saved internal responder")
+
+        // 地址栏/查找栏等文本编辑持有焦点时（field editor 或 NSTextField），
+        // 重激活不抢焦点。
+        precondition(window.makeFirstResponder(addressField))
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        let editingResponder = window.firstResponder
+        precondition(editingResponder === addressField || editingResponder === addressField.currentEditor(),
+            "text editing focus was stolen on window activation")
+        probe.removeFromSuperview()
+
         // 检查器已迁移到公开 API（isInspectable），不再随标签切换管理检查器窗口。
         container.sync(
             entries: [WebViewStackEntry(id: secondID, webView: second)],

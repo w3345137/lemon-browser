@@ -85,11 +85,38 @@ final class WebViewStackContainer: NSView {
     private var fullscreenObservers: [UUID: NSKeyValueObservation] = [:]
     private var selectedID: UUID?
     private var handledFocusRequestID: UUID?
+    private var windowKeyObserver: NSObjectProtocol?
     private final class SavedFocus {
         weak var view: NSView?
         init(_ view: NSView) { self.view = view }
     }
     private var savedFocus: [UUID: SavedFocus] = [:]
+
+    deinit {
+        if let windowKeyObserver {
+            NotificationCenter.default.removeObserver(windowKeyObserver)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let observer = windowKeyObserver {
+            NotificationCenter.default.removeObserver(observer)
+            windowKeyObserver = nil
+        }
+        guard let window else { return }
+        // ⌘Tab 回浏览器、点 Dock 图标或点窗口 chrome 激活时，AppKit 只恢复窗口
+        // 记住的 first responder；若它落在页签条/工具栏上，或随已关闭的查找栏
+        // 一起丢给窗口本身，空格等按键就到不了页面（视频空格暂停失效）。
+        // 窗口重新成为 key 时把焦点还给出选中页的 WKWebView。
+        windowKeyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.restorePageFocusOnWindowKey() }
+        }
+    }
 
     func sync(entries: [WebViewStackEntry], selectedID: UUID?, focusRequestID: UUID? = nil) {
         if let oldID = self.selectedID, let oldView = webViews[oldID],
@@ -166,6 +193,26 @@ final class WebViewStackContainer: NSView {
                window.makeFirstResponder(responder) { return }
             window.makeFirstResponder(webView)
         }
+    }
+
+    /// 窗口重新成为 key 时恢复页面焦点。仅处理 first responder 不在页面里的
+    /// 情况：页面本就持有焦点时不碰（保留 WebKit 内部 responder 与 DOM 焦点），
+    /// 地址栏/查找栏等文本编辑持有焦点时不抢。
+    private func restorePageFocusOnWindowKey() {
+        guard let window,
+              let selectedID, let webView = webViews[selectedID],
+              webView.superview === self, !webView.isHidden else { return }
+        if let responder = window.firstResponder as? NSView {
+            if responder === webView || responder.isDescendant(of: webView) { return }
+            // 文本编辑的 first responder 是共享 field editor（NSTextView），
+            // 未进入编辑的 NSTextField 则直接占据；两者都不抢。
+            if responder is NSTextView || responder is NSTextField { return }
+        }
+        if let responder = savedFocus[selectedID]?.view,
+           responder.window === window,
+           responder === webView || responder.isDescendant(of: webView),
+           window.makeFirstResponder(responder) { return }
+        window.makeFirstResponder(webView)
     }
 
     private func observeFullscreen(of webView: WKWebView, id: UUID) {
