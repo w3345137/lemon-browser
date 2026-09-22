@@ -66,8 +66,8 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
-	<!-- 会话 Cookie 使用 AES-GCM（豁免类别标准加密），上架时无需额外合规审查 -->
+	<!-- 仅使用 HTTPS/WebKit、Keychain 与 CryptoKit AES-GCM 等豁免标准加密。 -->
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<true/>
+	<false/>
 </dict>
 </plist>

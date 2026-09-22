@@ -514,7 +514,9 @@ private final class DefaultBrowserManager: ObservableObject {
 
 private struct PasswordSettingsView: View {
     @ObservedObject private var store = CredentialStore.shared
+    #if !APP_STORE
     @ObservedObject private var sessionImporter = SessionImportServer.shared
+    #endif
     @State private var searchText = ""
     @State private var errorText: String?
     @State private var importStatus = ""
@@ -545,8 +547,9 @@ private struct PasswordSettingsView: View {
             TextField("搜索网站或账号", text: $searchText)
                 .textFieldStyle(.roundedBorder)
 
-            GroupBox("从 360 浏览器迁移") {
+            GroupBox("导入密码") {
                 VStack(alignment: .leading, spacing: 9) {
+                    #if !APP_STORE
                     HStack {
                         Button("导入密码 CSV…") { importPasswords() }
                         Text("导入后，CSV 会移到废纸篓。")
@@ -581,17 +584,20 @@ private struct PasswordSettingsView: View {
                         Spacer()
                         Button("显示临时扩展") { revealSessionBridge() }
                     }
+                    #endif
 
                     if !importStatus.isEmpty {
                         Text(importStatus)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    #if !APP_STORE
                     if !sessionImporter.statusText.isEmpty {
                         Text(sessionImporter.statusText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    #endif
                 }
                 .padding(.vertical, 2)
             }
@@ -662,6 +668,7 @@ private struct PasswordSettingsView: View {
         }
     }
 
+    #if !APP_STORE
     private func revealSessionBridge() {
         guard let resourceURL = Bundle.main.resourceURL else { return }
         let bridgeURL = resourceURL.appendingPathComponent("360SessionBridge", isDirectory: true)
@@ -671,6 +678,7 @@ private struct PasswordSettingsView: View {
         }
         NSWorkspace.shared.activateFileViewerSelecting([bridgeURL])
     }
+    #endif
 }
 
 private struct BrowserStateKey: FocusedValueKey {

@@ -58,6 +58,20 @@ Mac App Store 版在 App Sandbox 中运行，entitlements 按需最小化：网�
 - 沙盒内不能直写默认浏览器登记，设置默认浏览器统一走 `NSWorkspace` 公开 API 并引导系统设置确认。
 - 会话 Cookie 使用 AES-GCM 加密，`ITSAppUsesNonExemptEncryption` 已声明，属标准加密豁免类别。
 
+商店版使用独立的 `AppStore` 构建配置与更小的权限集合：不包含 360 本机迁移监听服务，也不注入针对特定第三方影视站的兼容脚本。首次配置开发者团队后运行：
+
+```bash
+./Scripts/archive-app-store.sh
+```
+
+脚本会执行测试、生成 `deliverables/app-store/Lemon.xcarchive`、核验签名和商店权限，并在 Xcode Organizer 中打开归档。先使用 **Validate App** 验证；确认 App Store Connect 已建立 `com.lemon.browser` 的 macOS App 记录后，才可显式上传：
+
+```bash
+LEMON_UPLOAD_APP_STORE=1 ./Scripts/archive-app-store.sh
+```
+
+上传不会自动提交审核。商店中文文案、审核说明、隐私政策和支持页源文件位于 `AppStore/` 与 `docs/`。
+
 ## 系统要求
 
 - macOS 14 或更高版本

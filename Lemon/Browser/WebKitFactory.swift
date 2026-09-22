@@ -38,7 +38,10 @@ enum WebKitFactory {
         configuration.userContentController.addUserScript(MediaAudibilityBridge.tabMuteScript)
         configuration.userContentController.addUserScript(ExternalApplicationPolicy.userGestureScript)
         configuration.userContentController.addUserScript(TencentMeetingPlaybackBridge.userScript)
+        #if !APP_STORE
+        // 特定第三方影视站的兼容脚本不属于通用浏览器能力，也不进入商店版本。
         configuration.userContentController.addUserScript(WangfeiPlaybackBridge.userScript)
+        #endif
         ContentBlocker.shared.install(on: configuration)
         return configuration
     }

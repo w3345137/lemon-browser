@@ -42,14 +42,44 @@ struct TestSandboxEntitlements {
             precondition(dict[key] == nil, "不应包含 entitlement: \(key)")
         }
 
+        let storeEntitlementsURL = root
+            .appendingPathComponent("Lemon/Lemon-AppStore.entitlements")
+        let storeData = try Data(contentsOf: storeEntitlementsURL)
+        let storeEntitlements = try PropertyListSerialization.propertyList(
+            from: storeData,
+            format: nil
+        ) as? [String: Any]
+        precondition(storeEntitlements?["com.apple.security.app-sandbox"] as? Bool == true,
+                     "App Store 版本必须启用沙盒")
+        precondition(storeEntitlements?["com.apple.security.network.client"] as? Bool == true,
+                     "App Store 浏览器必须允许网络客户端访问")
+        precondition(storeEntitlements?["com.apple.security.network.server"] == nil,
+                     "App Store 版本不应包含 360 迁移服务的网络监听权限")
+
         let infoURL = root.appendingPathComponent("Lemon/Info.plist")
         let infoData = try Data(contentsOf: infoURL)
         let info = try PropertyListSerialization.propertyList(from: infoData, format: nil) as? [String: Any]
-        precondition(info?["ITSAppUsesNonExemptEncryption"] as? Bool == true,
-                     "缺少加密合规声明 ITSAppUsesNonExemptEncryption")
+        precondition(info?["ITSAppUsesNonExemptEncryption"] as? Bool == false,
+                     "仅使用豁免标准加密时 ITSAppUsesNonExemptEncryption 必须为 false")
         let ats = info?["NSAppTransportSecurity"] as? [String: Any]
         precondition(ats?["NSAllowsArbitraryLoads"] as? Bool == true,
                      "浏览器需要保持 NSAllowsArbitraryLoads（网页内容加载不受 ATS 限制）")
+
+        let privacyURL = root.appendingPathComponent("Lemon/PrivacyInfo.xcprivacy")
+        let privacyData = try Data(contentsOf: privacyURL)
+        let privacy = try PropertyListSerialization.propertyList(
+            from: privacyData,
+            format: nil
+        ) as? [String: Any]
+        precondition(privacy?["NSPrivacyTracking"] as? Bool == false,
+                     "Lemon 不跟踪用户")
+        precondition((privacy?["NSPrivacyCollectedDataTypes"] as? [Any])?.isEmpty == true,
+                     "Lemon 不向开发者收集用户数据")
+        let accessed = privacy?["NSPrivacyAccessedAPITypes"] as? [[String: Any]] ?? []
+        precondition(accessed.contains {
+            $0["NSPrivacyAccessedAPIType"] as? String == "NSPrivacyAccessedAPICategoryUserDefaults"
+                && ($0["NSPrivacyAccessedAPITypeReasons"] as? [String])?.contains("CA92.1") == true
+        }, "必须声明 App 自身设置使用 UserDefaults")
 
         print("sandbox-entitlements-tests=passed")
     }
