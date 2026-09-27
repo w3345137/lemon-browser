@@ -154,8 +154,7 @@ enum CredentialBridge {
     """#
 
     /// 主框架填充调度脚本：先尝试同步直填（捕获脚本已安装时走快路径，
-    /// 未安装时 eval 自包含逻辑），失败后向同站跨域 iframe 定向
-    /// postMessage 扇出（targetOrigin 精确到 frame origin，绝不广播 *）。
+    /// 未安装时 eval 自包含逻辑）。只允许同源表单，不向跨源 iframe 分发密码。
     static func fillDispatcherScript(payloadJSON: String) -> String {
         // 顶层是裸字符串，必须带 fragmentsAllowed；否则 JSONSerialization 直接
         // 抛 NSException（Swift try? 接不住）。真机测试抓到过这个崩溃。
@@ -166,6 +165,7 @@ enum CredentialBridge {
         return """
         (() => {
           const payload = \(payloadJSON);
+          if (new URL(payload.origin).origin !== location.origin) return { direct: false, targeted: [] };
           let fill = null;
           if (typeof window.__lemonPerformFill === 'function') fill = window.__lemonPerformFill;
           if (!fill) { try { fill = eval(\(encodedFillSource)); } catch (_) {} }
@@ -182,22 +182,12 @@ enum CredentialBridge {
             password: payload.password
           };
           try { window.postMessage(message, location.origin); } catch (_) {}
-          const multiPartTLDs = ['com.cn', 'net.cn', 'org.cn', 'gov.cn', 'com.hk', 'co.uk'];
-          const registrable = (host) => {
-            const parts = (host || '').toLowerCase().split('.').filter(Boolean);
-            if (parts.length < 2) return (host || '').toLowerCase();
-            const lastTwo = parts.slice(-2).join('.');
-            if (multiPartTLDs.includes(lastTwo) && parts.length >= 3) return parts.slice(-3).join('.');
-            return lastTwo;
-          };
-          const pageDomain = registrable(location.hostname);
           const targeted = [];
           for (const frame of Array.from(document.querySelectorAll('iframe'))) {
             try {
               if (!frame.src) continue;
               const origin = new URL(frame.src, location.href).origin;
-              if (origin === 'null' || origin === location.origin) continue;
-              if (registrable(new URL(origin).hostname) !== pageDomain) continue;
+              if (origin === 'null' || origin !== location.origin) continue;
               if (frame.contentWindow) {
                 frame.contentWindow.postMessage(message, origin);
                 targeted.push(origin);
@@ -302,6 +292,7 @@ enum CredentialBridge {
 
           window.addEventListener('message', (event) => {
             const data = event.data;
+            if (event.origin !== location.origin) return;
             if (!data || data.__lemonFill !== true) return;
             if (typeof data.username !== 'string' || typeof data.password !== 'string') return;
             if (typeof data.token !== 'string') return;

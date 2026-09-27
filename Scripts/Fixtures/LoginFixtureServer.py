@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Lemon QA 夹具：主站 18771（直接登录表单 + iframe 父页），子站 18772（跨源 iframe 登录框）。
-localhost 不同端口 = 跨源但同可注册域，用于验证 postMessage 扇出填充。"""
+localhost 不同端口 = 跨源，用于验证浏览器拒绝跨源密码分发。"""
 
 import http.server
 import socketserver
@@ -33,6 +33,12 @@ FRAME_LOGIN = """<!DOCTYPE html>
 <h2>QAIframeLogin</h2>
 <input type="text" id="frame-user" autocomplete="username" placeholder="iframe 账号">
 <input type="password" id="frame-pass" autocomplete="current-password" placeholder="iframe 密码">
+<script>
+addEventListener('message', event => {
+  if (event.origin !== 'http://localhost:18771' || event.data !== 'fixture-check-empty') return;
+  parent.postMessage({fixtureEmpty: !document.getElementById('frame-user').value && !document.getElementById('frame-pass').value}, event.origin);
+});
+</script>
 </body></html>"""
 
 SUCCESS = """<!DOCTYPE html>

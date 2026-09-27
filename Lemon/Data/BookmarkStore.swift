@@ -38,11 +38,19 @@ final class BookmarkStore: ObservableObject {
 
     @Published var barItems: [BookmarkItem]
     @Published var favorites: [BookmarkItem]
+    @Published private(set) var storageError: String?
+    private var storageReadable = true
+    private var lastSaved: Snapshot?
 
-    private let url: URL
+    private let url: URL?
 
-    init(storageURL: URL? = nil) {
-        if let storageURL {
+    init(storageURL: URL? = nil, inMemory: Bool = false) {
+        if inMemory {
+            url = nil
+            barItems = []
+            favorites = []
+            return
+        } else if let storageURL {
             url = storageURL
             try? FileManager.default.createDirectory(
                 at: storageURL.deletingLastPathComponent(),
@@ -55,14 +63,23 @@ final class BookmarkStore: ObservableObject {
             url = folder.appendingPathComponent("bookmarks.json")
         }
 
-        if let data = try? Data(contentsOf: url),
-           let decoded = try? JSONDecoder().decode(Snapshot.self, from: data) {
-            barItems = decoded.barItems
-            favorites = decoded.favorites
-        } else {
-            barItems = BookmarkItem.starterBar
-            favorites = BookmarkItem.starterBar
+        barItems = BookmarkItem.starterBar
+        favorites = BookmarkItem.starterBar
+        if let url {
+            do {
+                let decoded = try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: url))
+                barItems = decoded.barItems
+                favorites = decoded.favorites
+            } catch {
+                if (error as? CocoaError)?.code != .fileReadNoSuchFile {
+                    storageReadable = false
+                    barItems = []
+                    favorites = []
+                    storageError = "无法读取书签，已保留原文件并停止写入。请检查文件权限或从备份恢复后重启。\(error.localizedDescription)"
+                }
+            }
         }
+        lastSaved = Snapshot(barItems: barItems, favorites: favorites)
     }
 
     func toggleFavorite(title: String, url: URL) {
@@ -276,9 +293,20 @@ final class BookmarkStore: ObservableObject {
     }
 
     private func persist() {
+        guard let url else { return }
+        guard storageReadable else {
+            if let lastSaved { barItems = lastSaved.barItems; favorites = lastSaved.favorites }
+            return
+        }
         let snapshot = Snapshot(barItems: barItems, favorites: favorites)
-        if let data = try? JSONEncoder().encode(snapshot) {
-            try? data.write(to: url, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(snapshot)
+            try data.write(to: url, options: .atomic)
+            lastSaved = snapshot
+            storageError = nil
+        } catch {
+            if let lastSaved { barItems = lastSaved.barItems; favorites = lastSaved.favorites }
+            storageError = "书签未能保存，已撤销本次修改：\(error.localizedDescription)"
         }
     }
 

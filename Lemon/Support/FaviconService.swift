@@ -2,39 +2,38 @@ import AppKit
 
 enum FaviconService {
     private static let cache = NSCache<NSString, NSImage>()
+    private static let transport = FaviconTransport()
+    private static let session = URLSession(configuration: .ephemeral, delegate: transport, delegateQueue: nil)
     /// 站点没有任何可用 favicon 时的负缓存哨兵，避免每次打开同站页面都重新
-    /// 等一遍（不可达的 google 源在国内要等满超时）。
+    /// 等一遍超时。
     private static let missingMarker = NSImage()
 
     static func url(for page: URL) -> URL? {
-        guard let host = page.host else { return nil }
-        return URL(string: "https://www.google.com/s2/favicons?domain=\(host)&sz=64")
+        guard var parts = URLComponents(url: page, resolvingAgainstBaseURL: false),
+              ["http", "https"].contains(parts.scheme?.lowercased() ?? ""), parts.host != nil else { return nil }
+        parts.user = nil
+        parts.password = nil
+        parts.path = "/favicon.ico"
+        parts.query = nil
+        parts.fragment = nil
+        return parts.url
     }
 
     static func load(for page: URL, completion: @escaping (NSImage?) -> Void) {
-        guard let host = page.host else {
+        guard let iconURL = url(for: page) else {
             completion(nil)
             return
         }
-        // 缓存按 host 而不是整页 URL：同一站点的每个页面不应反复请求。
-        let key = host as NSString
+        // Include scheme and port so unrelated origins do not share cache entries.
+        let key = iconURL.absoluteString as NSString
         if let cached = cache.object(forKey: key) {
             completion(cached === missingMarker ? nil : cached)
             return
         }
 
-        var candidates: [URL] = []
-        if let scheme = page.scheme,
-           let direct = URL(string: "\(scheme)://\(host)/favicon.ico") {
-            candidates.append(direct)
-        }
-        if let google = url(for: page) { candidates.append(google) }
-        if let fallback = URL(string: "https://www.google.com/s2/favicons?domain_url=https://\(host)&sz=128") {
-            candidates.append(fallback)
-        }
+        let candidates = [iconURL]
 
-        // 候选并行竞速：站点自己的 favicon.ico 通常最先成功，立即返回，
-        // 不必再串行等待其余（可能不可达）的源各耗一遍超时。
+        // Only the site's own icon is requested; missing icons use a local placeholder.
         let race = FaviconRace(candidateCount: candidates.count) { image in
             if let image {
                 cache.setObject(image, forKey: key)
@@ -46,9 +45,10 @@ enum FaviconService {
         for candidate in candidates {
             var request = URLRequest(url: candidate)
             request.timeoutInterval = 3
-            URLSession.shared.dataTask(with: request) { data, response, _ in
+            request.httpShouldHandleCookies = false
+            session.dataTask(with: request) { data, response, _ in
                 let validResponse = (response as? HTTPURLResponse)
-                    .map { (200..<400).contains($0.statusCode) } ?? false
+                    .map { (200..<300).contains($0.statusCode) } ?? false
                 if validResponse, let data, let image = NSImage(data: data), image.size.width > 0 {
                     race.finish(with: image)
                 } else {
@@ -56,6 +56,18 @@ enum FaviconService {
                 }
             }.resume()
         }
+    }
+}
+
+private final class FaviconTransport: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        let original = task.originalRequest?.url
+        let target = request.url
+        let sameOrigin = original?.scheme == target?.scheme && original?.host == target?.host && original?.port == target?.port
+        completionHandler(sameOrigin ? request : nil)
     }
 }
 

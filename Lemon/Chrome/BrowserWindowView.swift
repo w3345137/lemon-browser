@@ -6,8 +6,8 @@ struct BrowserWindowView: View {
     @FocusState private var addressFocused: Bool
     @State private var incomingURLToken: UUID?
 
-    init(isPrivate: Bool = false) {
-        _state = StateObject(wrappedValue: BrowserWindowState(isPrivate: isPrivate))
+    init(isPrivate: Bool = false, isDemo: Bool = false) {
+        _state = StateObject(wrappedValue: BrowserWindowState(isPrivate: isPrivate, isDemo: isDemo))
     }
 
     var body: some View {
@@ -25,6 +25,8 @@ struct BrowserWindowView: View {
                 FindBarView(state: state)
             }
             Divider().opacity(0.28)
+            BookmarkStorageNotice(store: state.bookmarks)
+            if let tab = state.selectedTab { SlowPageNotice(tab: tab) }
             if let notice = state.credentialNotice {
                 HStack(spacing: 10) {
                     Image(systemName: "info.circle")
@@ -56,8 +58,9 @@ struct BrowserWindowView: View {
         // 明确延伸到窗口顶端，让红绿灯与标签始终同排。
         .ignoresSafeArea(.container, edges: .top)
         .background(WindowChrome(
-            isPrivate: state.isPrivate,
+            isPrivate: state.isPrivate && !state.isDemo,
             onWindowKey: {
+                DemoWindowContext.shared.isDemoActive = state.isDemo
                 // 系统外链应交给当前聚焦的窗口；多窗口时后开的窗口不再抢走接收权。
                 guard !state.isPrivate else { return }
                 incomingURLToken = IncomingBrowserURL.attach { url in
@@ -65,13 +68,14 @@ struct BrowserWindowView: View {
                 }
             },
             onWindowClose: {
+                if state.isDemo { DemoWindowContext.shared.isDemoActive = false }
                 if let incomingURLToken {
                     IncomingBrowserURL.detach(incomingURLToken)
                 }
                 state.handleWindowWillClose()
             }
         ))
-        .background(state.isPrivate ? Color.black.opacity(0.18) : Color(nsColor: .windowBackgroundColor))
+        .background(state.isPrivate && !state.isDemo ? Color.black.opacity(0.18) : Color(nsColor: .windowBackgroundColor))
         .focusedSceneValue(\.browserState, state)
         .onChange(of: state.addressFocusToken) { _, _ in
             // TextField 由 isAddressEditing 动态插入，等一轮布局后再请求焦点。
@@ -209,6 +213,57 @@ struct BrowserWindowView: View {
     }
 }
 
+private struct BookmarkStorageNotice: View {
+    @ObservedObject var store: BookmarkStore
+    var body: some View {
+        if let message = store.storageError {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.system(size: 12))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(Color.yellow.opacity(0.15))
+        }
+    }
+}
+
+private struct SlowPageNotice: View {
+    @ObservedObject var tab: BrowserTab
+    var body: some View {
+        if let notice = tab.slowPageNotice {
+            HStack {
+                Text(notice).font(.system(size: 12))
+                Spacer()
+                if tab.canRetrySlowPage { Button("重新打开") { tab.retrySlowPage() } }
+                Button("继续等待") { tab.dismissSlowPageNotice() }
+            }
+            .padding(8)
+            .background(Color(nsColor: .controlBackgroundColor))
+        }
+    }
+}
+
+private struct NavigationFailureNotice: View {
+    @ObservedObject var tab: BrowserTab
+    var body: some View {
+        if let error = tab.navigationError {
+            VStack(spacing: 14) {
+                Image(systemName: "exclamationmark.triangle").font(.system(size: 36))
+                Text("网页加载失败").font(.headline)
+                Text(error).font(.callout).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).frame(maxWidth: 480)
+                HStack {
+                    if tab.webView?.backForwardList.currentItem != nil {
+                        Button("返回原页面") { tab.returnToLoadedPage() }
+                    }
+                    Button("重试") { tab.reload() }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
+        }
+    }
+}
+
 private struct PageStage: View {
     @ObservedObject var state: BrowserWindowState
 
@@ -227,6 +282,7 @@ private struct PageStage: View {
             } else if state.selectedTab?.isStartPage != false || state.selectedTab?.webView == nil {
                 StartPageView(state: state)
             }
+            if let tab = state.selectedTab { NavigationFailureNotice(tab: tab) }
         }
     }
 }

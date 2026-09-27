@@ -82,6 +82,18 @@ run_test TestNavigationLoading \
   "$project_root/Scripts/TestNavigationLoading.swift" \
   "${TAB_HARNESS[@]}"
 
+run_test TestPrivateSession \
+  "$project_root/Scripts/TestPrivateSession.swift" \
+  "${TAB_HARNESS[@]}"
+
+run_test TestSlowPage \
+  "$project_root/Scripts/TestSlowPage.swift" \
+  "${TAB_HARNESS[@]}"
+
+run_test TestFaviconPrivacy \
+  "$project_root/Scripts/TestFaviconPrivacy.swift" \
+  "$project_root/Lemon/Support/FaviconService.swift"
+
 run_test TestMediaAudibility \
   "$project_root/Scripts/TestMediaAudibility.swift" \
   "${TAB_HARNESS[@]}"
@@ -104,6 +116,10 @@ run_test TestMediaAudibilityLive \
 
 run_test TestBookmarkMoves \
   "$project_root/Scripts/TestBookmarkMoves.swift" \
+  "$project_root/Lemon/Data/BookmarkStore.swift"
+
+run_test TestDemoBookmarks \
+  "$project_root/Scripts/TestDemoBookmarks.swift" \
   "$project_root/Lemon/Data/BookmarkStore.swift"
 
 run_test TestBookmarkFolderLayout \

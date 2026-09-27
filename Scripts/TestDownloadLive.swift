@@ -57,7 +57,10 @@ struct TestDownloadLive {
         let partial = store.items.first!
         precondition(partial.partialURL != nil)
         precondition(!FileManager.default.fileExists(atPath: partial.fileURL.path), "No unfinished final file")
+        try Data("unrelated-file".utf8).write(to: partial.fileURL)
         try await store.delete(partial)
+        let preserved = try String(contentsOf: partial.fileURL, encoding: .utf8)
+        precondition(preserved == "unrelated-file", "Cancelling must not delete a reserved name owned by someone else")
         try await Task.sleep(nanoseconds: 400_000_000)
         precondition(store.items.isEmpty)
         precondition(!FileManager.default.fileExists(atPath: partial.partialURL!.path))
@@ -85,7 +88,15 @@ struct TestDownloadLive {
         precondition(resumed.state == .completed, resumed.statusText)
         let resumedData = try Data(contentsOf: resumed.fileURL)
         precondition(resumedData == Data(repeating: 0x4c, count: 64 * 1024 * 256))
-        try await store.delete(resumed)
+        try FileManager.default.moveItem(at: resumed.fileURL, to: folder.appendingPathComponent("original-finished.bin"))
+        try Data("replacement-file".utf8).write(to: resumed.fileURL)
+        do {
+            try await store.delete(resumed)
+            preconditionFailure("A replaced completed file must not be deleted")
+        } catch {
+            let replacement = try String(contentsOf: resumed.fileURL, encoding: .utf8)
+            precondition(replacement == "replacement-file")
+        }
         print("download-live-tests=passed")
     }
 }

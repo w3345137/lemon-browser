@@ -28,8 +28,14 @@ enum TestNavigationLoading {
         from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
         import time
         class Handler(BaseHTTPRequestHandler):
+            recovery_ready = False
             def log_message(self, *args): pass
             def do_GET(self):
+                if self.path.startswith('/enable'):
+                    Handler.recovery_ready = True
+                if self.path.startswith('/recover') and not Handler.recovery_ready:
+                    self.connection.close()
+                    return
                 if self.path.startswith('/pending'):
                     time.sleep(30)
                     return
@@ -92,6 +98,34 @@ enum TestNavigationLoading {
         wait("before failure", until: { tab.isLoading })
         navigate("fail")
         wait("failure", until: { !tab.isLoading && !view.isLoading })
+        precondition(tab.url?.path == "/fail", "Keep the failed destination, not the old committed page")
+        let revision = tab.navigationRevision
+        tab.reload()
+        wait("retry failed destination", until: { tab.navigationRevision != revision })
+        wait("retry failure finishes", until: { !tab.isLoading && !view.isLoading })
+        precondition(tab.url?.path == "/fail")
+
+        let fresh = BrowserTab(isPrivate: true, startURL: URL(string: "http://127.0.0.1:\(port)/fail")!)
+        let firstRevision = fresh.navigationRevision
+        wait("first-load failure", until: { fresh.navigationRevision != firstRevision && !fresh.isLoading })
+        let failedRevision = fresh.navigationRevision
+        fresh.reload()
+        wait("empty webview retries", until: { fresh.navigationRevision != failedRevision })
+        fresh.tearDown()
+
+        navigate("recover")
+        wait("recover initial failure", until: { tab.navigationError != nil && tab.url?.path == "/recover" })
+        _ = try! String(contentsOf: URL(string: "http://127.0.0.1:\(port)/enable")!, encoding: .utf8)
+        tab.reload()
+        wait("retry recovers successfully", until: { tab.navigationError == nil && !tab.isLoading && view.url?.path == "/recover" && view.title == "Loaded" })
+
+        // A pending/failed navigation must not erase the old document's audio.
+        tab.mediaAudibilityDidChange(source: "dom", audible: true)
+        navigate("pending")
+        wait("audio pending navigation", until: { tab.isLoading })
+        precondition(tab.mediaState == .playing)
+        tab.stopLoading()
+        precondition(tab.mediaState == .playing)
         navigate("pending")
         wait("before teardown", until: { tab.isLoading })
         tab.tearDown()

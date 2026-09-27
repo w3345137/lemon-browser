@@ -48,11 +48,15 @@ enum BrowserTabMediaState: Equatable {
 final class BrowserTab: NSObject, ObservableObject, Identifiable {
     let id = UUID()
     let isPrivate: Bool
+    private let sessionDataStore: WKWebsiteDataStore?
 
     @Published var title: String
     @Published var url: URL?
     @Published var isStartPage: Bool
     @Published var isLoading = false
+    @Published private(set) var navigationError: String?
+    @Published private(set) var slowPageNotice: String?
+    @Published private(set) var canRetrySlowPage = false
     @Published var estimatedProgress: Double = 0
     @Published var canGoBack = false
     @Published var canGoForward = false
@@ -95,8 +99,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
 
     weak var windowState: BrowserWindowState?
 
-    init(isPrivate: Bool, startURL: URL? = nil, loadsImmediately: Bool = true) {
+    init(isPrivate: Bool, startURL: URL? = nil, loadsImmediately: Bool = true, dataStore: WKWebsiteDataStore? = nil) {
         self.isPrivate = isPrivate
+        self.sessionDataStore = dataStore
         self.isStartPage = startURL == nil
         self.title = startURL == nil ? "起始页面" : "新标签页"
         self.url = startURL
@@ -121,16 +126,116 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     private var topResetNavigation: WKNavigation?
+    private var pendingRequest: URLRequest?
+    private var failedRequest: URLRequest?
+    private var provisionalNavigation: WKNavigation?
+    private var recoveryRequest: URLRequest?
+    private var slowPageWork: DispatchWorkItem?
+    private var slowPageEpoch = UUID()
+    private var slowPageDeadline = Date.distantPast
+    static var slowPageDelay: TimeInterval = 30
+
+    func dismissSlowPageNotice() {
+        slowPageEpoch = UUID()
+        slowPageWork?.cancel()
+        slowPageWork = nil
+        slowPageNotice = nil
+        canRetrySlowPage = false
+    }
+
+    /// Only a user action can retry; authentication submissions are never replayed.
+    func retrySlowPage() {
+        guard canRetrySlowPage, let request = recoveryRequest,
+              ["GET", "HEAD"].contains(request.httpMethod ?? "GET") else { return }
+        let destination = Self.loginRestartURL(for: request.url)
+        let revision = navigationRevision
+        // Recheck at click time, not merely at the previous polling interval.
+        webView?.evaluateJavaScript("""
+            ![...document.querySelectorAll('input,textarea,[contenteditable=true]')].some(e =>
+              e.isContentEditable ? !!e.textContent : !['hidden','submit','button','checkbox','radio'].includes(e.type) && !!e.value)
+            """) { [weak self] result, _ in
+                guard let self, self.navigationRevision == revision, self.canRetrySlowPage else { return }
+                guard result as? Bool == true else {
+                    self.canRetrySlowPage = false
+                    self.slowPageNotice = "页面已有输入或暂时无法检查，请先保留填写内容后再手动操作。"
+                    return
+                }
+                self.dismissSlowPageNotice()
+                self.webView?.stopLoading()
+                if let destination { self.load(destination) }
+                else { self.topResetNavigation = self.ensureWebView().load(request) }
+            }
+    }
+
+    static func loginRestartURL(for url: URL?) -> URL? {
+        guard let url, url.scheme == "https", url.host == "login.microsoftonline.com",
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let redirect = parts.queryItems?.first(where: { $0.name == "redirect_uri" })?.value,
+              let target = URL(string: redirect), target.scheme == "https", target.host == "partner.microsoft.com" else { return nil }
+        return URL(string: "https://partner.microsoft.com/dashboard")
+    }
+
+    private func checkSlowPage(revision: UUID) {
+        guard navigationRevision == revision, !loadingWasStopped, !webContentDidCrash,
+              navigationError == nil, let view = webView else { return }
+        let epoch = slowPageEpoch
+        var receivedResult = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak view] in
+            guard !receivedResult, let self, let view, self.webView === view,
+                  self.navigationRevision == revision, self.slowPageEpoch == epoch else { return }
+            self.slowPageNotice = "网页响应较慢，暂时无法检查页面内容。可继续等待，或通过地址栏重新打开网站入口。"
+            self.canRetrySlowPage = false
+        }
+        // No page text, field values, OAuth parameters or resource URLs leave the page.
+        view.evaluateJavaScript("""
+            (() => {
+                const visible = e => { const r=e.getBoundingClientRect(); const s=getComputedStyle(e); return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; };
+                const fields = [...document.querySelectorAll('input,textarea')];
+                const edited = fields.some(e => !['hidden','submit','button','checkbox','radio'].includes(e.type) && !!e.value);
+                const content = (document.readyState==='complete' && document.scripts.length===0) ||
+                    (document.body?.innerText.trim().length || 0)>80 ||
+                    [...document.querySelectorAll('input:not([type=hidden]),textarea,video,canvas,iframe')].some(visible);
+                return {content, edited};
+            })()
+            """) { [weak self, weak view] value, _ in
+                receivedResult = true
+                guard let self, let view, self.webView === view, self.navigationRevision == revision,
+                      self.slowPageEpoch == epoch, !self.loadingWasStopped, self.navigationError == nil else { return }
+                let result = value as? [String: Bool]
+                if result?["content"] == true {
+                    self.dismissSlowPageNotice()
+                    return
+                }
+                self.slowPageNotice = "页面长时间未显示内容，可能仍在等待网络或网站脚本。可继续等待，或重新打开。"
+                self.canRetrySlowPage = result?["edited"] == false &&
+                    ["GET", "HEAD"].contains(self.recoveryRequest?.httpMethod ?? "")
+                if Date() < self.slowPageDeadline { self.scheduleSlowPageCheck(revision: revision, delay: 5) }
+            }
+    }
+
+    private func scheduleSlowPageCheck(revision: UUID, delay: TimeInterval) {
+        slowPageWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.checkSlowPage(revision: revision) }
+        slowPageWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
 
     func reload() {
         savedScrollPosition = nil
         // 崩溃占位上的“重新载入”和菜单 ⌘R 走同一条路径；崩溃后
         // webView.reload() 会让 WebKit 重新拉起 WebContent 进程。
-        let wasCrashed = webContentDidCrash
         webContentDidCrash = false
         // 崩溃后 WebKit 可能已把 webView.url 清空，此时 reload() 是空操作；
         // 用 tab 记住的 URL 重新加载（Chromium 对崩溃后台标签也是这个语义）。
-        if wasCrashed, webView?.url == nil, let remembered = url {
+        if let request = failedRequest {
+            guard ["GET", "HEAD"].contains(request.httpMethod ?? "GET") else {
+                navigationError = "该请求包含表单提交，不能安全地自动重发。请回到原表单重新提交。"
+                return
+            }
+            topResetNavigation = ensureWebView().load(request)
+            return
+        }
+        if webView?.url == nil, let remembered = url {
             load(remembered)
             return
         }
@@ -138,10 +243,19 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     func stopLoading() {
+        dismissSlowPageNotice()
         loadingWasStopped = true
         webView?.stopLoading()
         isLoading = false
         estimatedProgress = 0
+    }
+
+    func returnToLoadedPage() {
+        guard webView?.backForwardList.currentItem != nil else { return }
+        failedRequest = nil
+        pendingRequest = nil
+        navigationError = nil
+        syncNavigationState()
     }
 
     /// 页面侧媒体桥（MediaAudibilityBridge）上报的“可闻”状态。
@@ -300,7 +414,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     static var credentialCaptureConfirmDelay: TimeInterval = 6
 
     func fill(_ credential: WebCredential, password: String, automatic: Bool = false, completion: @escaping (Bool) -> Void) {
-        guard let webView else {
+        guard let webView, CredentialStore.sharesSite(origin: credential.scope, with: webView.url) else {
             completion(false)
             return
         }
@@ -309,6 +423,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         pendingFillCompletion = completion
         let payload: [String: Any] = [
             "automatic": automatic,
+            "origin": credential.scope,
             "token": token,
             "username": credential.username,
             "password": password
@@ -435,6 +550,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         url = destination
         title = BrowserTabTitle.display(documentTitle: nil, url: destination)
         view.load(URLRequest(url: destination))
+        guard !isPrivate else { return }
         FaviconService.load(for: destination) { [weak self] image in
             // 异步图标晚到时不允许覆盖已经导航到新地址的标签。
             guard let self, self.url == destination else { return }
@@ -445,7 +561,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     func ensureWebView() -> WKWebView {
         if let webView { return webView }
 
-        let view = WebKitFactory.makeWebView(isPrivate: isPrivate)
+        let view = WebKitFactory.makeWebView(isPrivate: isPrivate, dataStore: sessionDataStore)
         configure(view)
         return view
     }
@@ -541,7 +657,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         }
         titleObserver = view.observe(\.title, options: [.new]) { [weak self] webView, _ in
             DispatchQueue.main.async {
-                guard let self, self.webView === webView else { return }
+                guard let self, self.webView === webView, self.failedRequest == nil else { return }
                 self.title = BrowserTabTitle.display(documentTitle: webView.title, url: webView.url ?? self.url)
             }
         }
@@ -549,10 +665,11 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
             DispatchQueue.main.async {
                 // WebContent 进程崩溃时 WebKit 会把 webView.url 清空；崩溃占位的
                 // “重新载入”和会话持久化都依赖原 URL，nil 一律不覆盖已有值。
-                guard let newURL = webView.url else { return }
-                self?.url = newURL
-                self?.title = BrowserTabTitle.display(documentTitle: webView.title, url: newURL)
-                self?.handleURLChange(url: newURL)
+                guard let self, self.webView === webView, self.failedRequest == nil,
+                      let newURL = webView.url else { return }
+                self.url = newURL
+                self.title = BrowserTabTitle.display(documentTitle: webView.title, url: newURL)
+                self.handleURLChange(url: newURL)
             }
         }
         webView = view
@@ -574,6 +691,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     private func releaseWebView() {
+        dismissSlowPageNotice()
         if let view = webView {
             view.stopLoading()
             // stopLoading 不会暂停媒体；只靠释放 WKWebView 的话，WebContent
@@ -615,24 +733,37 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         canGoBack = webView?.canGoBack ?? false
         canGoForward = webView?.canGoForward ?? false
         isLoading = !loadingWasStopped && !webContentDidCrash && (webView?.isLoading ?? false)
-        if let url = webView?.url {
+        if failedRequest == nil, let url = webView?.url {
             self.url = url
         }
         if !isStartPage, !webContentDidCrash {
-            title = BrowserTabTitle.display(documentTitle: webView?.title, url: url)
+            title = BrowserTabTitle.display(documentTitle: failedRequest == nil ? webView?.title : nil, url: url)
         }
     }
 }
 
 extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        provisionalNavigation = navigation
+        failedRequest = nil
+        navigationError = nil
         navigationRevision = UUID()
+        dismissSlowPageNotice()
+        recoveryRequest = pendingRequest
+        slowPageDeadline = Date().addingTimeInterval(120)
+        scheduleSlowPageCheck(revision: navigationRevision, delay: Self.slowPageDelay)
         loadingWasStopped = false
         // 任何新导航都说明 WebContent 进程已经恢复，清掉崩溃占位。
         webContentDidCrash = false
         isLoading = true
         estimatedProgress = 0.05
-        // 新文档从静音开始；若自动起播，媒体桥会重新上报。
+        // The old document may keep playing if this navigation fails or is stopped.
+        dismissPageDialog()
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        failedRequest = nil
+        pendingRequest = nil
         resetMediaAudibility()
     }
 
@@ -642,6 +773,7 @@ extension BrowserTab: WKNavigationDelegate {
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard webView === self.webView, lifecycleState != .discarded else { return }
         webContentDidCrash = true
+        dismissSlowPageNotice()
         isLoading = false
         estimatedProgress = 0
         resetMediaAudibility()
@@ -654,7 +786,7 @@ extension BrowserTab: WKNavigationDelegate {
             windowState?.history.record(title: title, url: url)
             if url.isFileURL {
                 favicon = NSWorkspace.shared.icon(forFile: url.path)
-            } else {
+            } else if !isPrivate {
                 FaviconService.load(for: url) { [weak self] image in
                     guard let self, self.url == url else { return }
                     self.favicon = image
@@ -684,10 +816,20 @@ extension BrowserTab: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if navigation === provisionalNavigation, (error as NSError).code != NSURLErrorCancelled {
+            dismissSlowPageNotice()
+            navigationError = error.localizedDescription
+        }
         syncNavigationState()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if navigation === provisionalNavigation, (error as NSError).code != NSURLErrorCancelled {
+            dismissSlowPageNotice()
+            failedRequest = pendingRequest
+            navigationError = error.localizedDescription
+            if let destination = failedRequest?.url { url = destination }
+        }
         syncNavigationState()
     }
 
@@ -709,8 +851,10 @@ extension BrowserTab: WKNavigationDelegate {
             windowState?.openInNewTab(url, select: false)
             return .cancel
         }
+        if navigationAction.shouldPerformDownload { return .download }
         if navigationAction.targetFrame?.isMainFrame == true,
            let destination = navigationAction.request.url {
+            pendingRequest = navigationAction.request
             applySitePlaybackIdentity(for: destination, to: webView)
         }
         return .allow
@@ -753,32 +897,25 @@ extension BrowserTab: WKUIDelegate {
 
         let host = webView.url?.host ?? navigationAction.request.url?.host ?? ""
         let store = SitePermissionStore.shared
-        var choice = store.choice(for: host, kind: .popups)
+        let choice = store.choice(for: host, kind: .popups)
         if choice == .ask, !host.isEmpty {
-            // “询问”必须真的问，否则语义等同于允许。
-            let prompt = promptForPopupPermission(host: host)
-            choice = prompt.choice
-            if prompt.remember {
-                store.set(prompt.choice, for: host, kind: .popups)
+            let revision = navigationRevision
+            Task { @MainActor [weak self] in
+                guard let self, self.navigationRevision == revision else { return }
+                let response = await self.presentPageDialog(
+                    message: "允许 \(host) 打开弹出式窗口？允许后请再次点击网页中的链接。可在网站权限中撤销。",
+                    confirm: true)
+                guard self.navigationRevision == revision, response == .alertFirstButtonReturn else { return }
+                store.set(.allow, for: host, kind: .popups)
             }
+            // WKUIDelegate requires a synchronous return. Do not create an
+            // unapproved window or run a nested application-modal event loop.
+            return nil
         }
-        if choice == .block {
+        if choice != .allow {
             return nil
         }
         return windowState?.openPopup(with: configuration)
-    }
-
-    private func promptForPopupPermission(host: String) -> (choice: SitePermissionChoice, remember: Bool) {
-        let alert = NSAlert()
-        alert.messageText = "允许 \(host) 打开弹出式窗口？"
-        alert.informativeText = "该网站正在尝试打开一个新窗口。"
-        alert.addButton(withTitle: "允许")
-        alert.addButton(withTitle: "阻止")
-        let rememberBox = NSButton(checkboxWithTitle: "记住此网站的选择", target: nil, action: nil)
-        rememberBox.frame = NSRect(x: 0, y: 0, width: 240, height: 20)
-        alert.accessoryView = rememberBox
-        let allowed = alert.runModal() == .alertFirstButtonReturn
-        return (allowed ? .allow : .block, rememberBox.state == .on)
     }
 
     func webView(
@@ -845,7 +982,7 @@ extension BrowserTab: WKUIDelegate {
         // stale presenter defensively so no continuation survives navigation
         // teardown or a WebContent process replacement.
         dismissPageDialog()
-        guard let parentWindow = webView?.window else { return .cancel }
+        guard let view = webView, !view.isHidden, let parentWindow = view.window else { return .cancel }
         return await withCheckedContinuation { continuation in
             let presenter = PageDialogPresenter(
                 title: title,
@@ -1099,6 +1236,14 @@ extension BrowserTab {
               let type = body["type"] as? String,
               let origin = body["origin"] as? String,
               CredentialStore.sharesSite(origin: origin, with: webView?.url) else { return }
+        // The body's origin is page-controlled. Verify WebKit's frame identity.
+        let frameOrigin = message.frameInfo.securityOrigin
+        var frameComponents = URLComponents()
+        frameComponents.scheme = frameOrigin.protocol
+        frameComponents.host = frameOrigin.host
+        frameComponents.port = frameOrigin.port == 0 ? nil : frameOrigin.port
+        guard let trustedOrigin = frameComponents.string,
+              CredentialStore.sharesSite(origin: trustedOrigin, with: webView?.url) else { return }
 
         if type == "formReady" {
             // The JS notification carries no credentials. Native readiness probe
@@ -1201,58 +1346,33 @@ private extension BrowserTab {
             ?? self.url?.host
             ?? "当前网站"
         let store = SitePermissionStore.shared
-        var choice = store.externalApplicationChoice(for: sourceHost, scheme: scheme)
+        let choice = store.externalApplicationChoice(for: sourceHost, scheme: scheme)
 
         guard let applicationURL = NSWorkspace.shared.urlForApplication(toOpen: url) else {
-            showMissingExternalApplicationAlert(scheme: scheme)
+            Task { @MainActor [weak self] in
+                _ = await self?.presentPageDialog(message: "Mac 上没有找到可以处理 \(scheme) 链接的应用。", confirm: false)
+            }
             return
         }
         let applicationName = applicationDisplayName(at: applicationURL)
 
         if choice == .ask {
-            let prompt = promptForExternalApplication(
-                sourceHost: sourceHost,
-                applicationName: applicationName,
-                scheme: scheme
-            )
-            choice = prompt.choice
-            if prompt.remember {
-                store.setExternalApplicationChoice(choice, for: sourceHost, scheme: scheme)
+            let revision = navigationRevision
+            Task { @MainActor [weak self, weak webView] in
+                guard let self, self.navigationRevision == revision else { return }
+                let response = await self.presentPageDialog(
+                    message: "\(sourceHost) 请求打开“\(applicationName)”。是否允许本次打开？", confirm: true)
+                guard response == .alertFirstButtonReturn, self.navigationRevision == revision,
+                      self.webView === webView else { return }
+                self.lastExternalApplicationOpen = (scheme, Date())
+                NSWorkspace.shared.open(url)
             }
+            return
         }
         guard choice == .allow else { return }
 
         lastExternalApplicationOpen = (scheme, Date())
         NSWorkspace.shared.open(url)
-    }
-
-    func promptForExternalApplication(
-        sourceHost: String,
-        applicationName: String,
-        scheme: String
-    ) -> (choice: SitePermissionChoice, remember: Bool) {
-        let alert = NSAlert()
-        alert.messageText = "允许打开“\(applicationName)”？"
-        alert.informativeText = "\(sourceHost) 正在尝试通过 \(scheme) 链接打开此应用。"
-        alert.addButton(withTitle: "打开 \(applicationName)")
-        alert.addButton(withTitle: "取消")
-        let rememberBox = NSButton(
-            checkboxWithTitle: "一直允许 \(sourceHost) 打开此类链接",
-            target: nil,
-            action: nil
-        )
-        rememberBox.frame = NSRect(x: 0, y: 0, width: 360, height: 20)
-        alert.accessoryView = rememberBox
-        let allowed = alert.runModal() == .alertFirstButtonReturn
-        return (allowed ? .allow : .block, rememberBox.state == .on)
-    }
-
-    func showMissingExternalApplicationAlert(scheme: String) {
-        let alert = NSAlert()
-        alert.messageText = "无法打开链接"
-        alert.informativeText = "Mac 上没有找到可以处理 \(scheme) 链接的应用。"
-        alert.addButton(withTitle: "好")
-        alert.runModal()
     }
 
     func applicationDisplayName(at applicationURL: URL) -> String {

@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 @main
 struct LemonApp: App {
     @NSApplicationDelegateAdaptor(LemonAppDelegate.self) private var appDelegate
+    private let launchesInDemo = ProcessInfo.processInfo.arguments.contains("--demo")
 
     init() {
         LemonIdentityMigration.runIfNeeded()
@@ -14,7 +15,7 @@ struct LemonApp: App {
 
     var body: some Scene {
         WindowGroup("Lemon", id: "main") {
-            BrowserWindowView(isPrivate: false)
+            BrowserWindowView(isDemo: launchesInDemo)
                 .frame(minWidth: 860, minHeight: 560)
         }
         .defaultSize(width: 1180, height: 780)
@@ -25,6 +26,13 @@ struct LemonApp: App {
 
         WindowGroup("无痕浏览", id: "private") {
             BrowserWindowView(isPrivate: true)
+                .frame(minWidth: 860, minHeight: 560)
+        }
+        .defaultSize(width: 1180, height: 780)
+        .windowStyle(.hiddenTitleBar)
+
+        WindowGroup("演示窗口", id: "demo") {
+            BrowserWindowView(isDemo: true)
                 .frame(minWidth: 860, minHeight: 560)
         }
         .defaultSize(width: 1180, height: 780)
@@ -43,8 +51,8 @@ struct BrowserCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("新建窗口") {
-                openWindow(id: "main")
+            Button(state?.isDemo == true ? "新建演示窗口" : "新建窗口") {
+                openWindow(id: state?.isDemo == true ? "demo" : "main")
             }
             .keyboardShortcut("n", modifiers: .command)
 
@@ -52,6 +60,11 @@ struct BrowserCommands: Commands {
                 openWindow(id: "private")
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+            .disabled(state?.isDemo == true)
+
+            Button("新建干净演示窗口") {
+                openWindow(id: "demo")
+            }
 
             Button("新建标签页") {
                 state?.openNewTab()
@@ -143,6 +156,7 @@ struct BrowserCommands: Commands {
                 openSettings()
             }
             .keyboardShortcut("b", modifiers: [.command, .option])
+            .disabled(state?.isDemo == true)
         }
 
         CommandMenu("工具") {
@@ -153,6 +167,7 @@ struct BrowserCommands: Commands {
                     NSWorkspace.shared.open(folder)
                 }
             }
+            .disabled(state?.isDemo == true)
             Divider()
             // 检查器走公开 API：网页 isInspectable = true，
             // 在 Safari“开发”菜单中检查；不使用 WebKit 私有 SPI。
@@ -170,6 +185,7 @@ struct BrowserCommands: Commands {
                 state?.isBookmarkBarVisible.toggle()
             }
             .keyboardShortcut("b", modifiers: [.command, .shift])
+            .disabled(state?.isDemo == true)
 
             Button("显示/隐藏边栏") {
                 state?.isSidebarVisible.toggle()
@@ -238,12 +254,38 @@ final class SettingsNavigation: ObservableObject {
     private init() {}
 }
 
+@MainActor
+final class DemoWindowContext: ObservableObject {
+    static let shared = DemoWindowContext()
+    @Published var isDemoActive = false
+    private init() {}
+}
+
 struct SettingsView: View {
     @StateObject private var defaultBrowser = DefaultBrowserManager()
     @ObservedObject private var contentBlocker = ContentBlocker.shared
     @ObservedObject private var navigation = SettingsNavigation.shared
+    @ObservedObject private var demoContext = DemoWindowContext.shared
 
     var body: some View {
+        Group {
+            if demoContext.isDemoActive || ProcessInfo.processInfo.arguments.contains("--demo") {
+                VStack(spacing: 12) {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .font(.system(size: 34))
+                    Text("演示窗口")
+                        .font(.title2.weight(.semibold))
+                    Text("演示窗口不显示个人设置、书签、密码或网站数据。")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(width: 920, height: 640)
+            } else {
+                regularSettings
+            }
+        }
+    }
+
+    private var regularSettings: some View {
         VStack(spacing: 0) {
             ZStack {
                 HStack {

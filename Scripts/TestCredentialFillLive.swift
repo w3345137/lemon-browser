@@ -77,8 +77,7 @@ enum TestCredentialFillLive {
             tab.tearDown()
         }
 
-        // 3. 跨源 iframe 填充：主文档没有密码框，必须经 postMessage 扇出到
-        //    localhost:18772 的框架，由框架内捕获脚本填充并回执。
+        // 3. Different ports are different origins: do not disclose credentials.
         do {
             let tab = BrowserTab(isPrivate: false, startURL: URL(string: "http://localhost:18771/iframe-parent.html")!, loadsImmediately: false)
             tab.windowState = windowState
@@ -93,7 +92,21 @@ enum TestCredentialFillLive {
                 fillResult = ok
             }
             precondition(waitFor(6) { fillResult != nil }, "iframe fill completion never fired")
-            precondition(fillResult == true, "cross-origin iframe fill reported failure")
+            precondition(fillResult == false, "cross-origin iframe must not receive credentials")
+            var probed = false
+            tab.webView?.evaluateJavaScript("""
+                window.fixtureEmpty = null;
+                addEventListener('message', event => {
+                    if (event.origin === 'http://localhost:18772' && typeof event.data.fixtureEmpty === 'boolean') window.fixtureEmpty = event.data.fixtureEmpty;
+                });
+                document.querySelector('iframe').contentWindow.postMessage('fixture-check-empty', 'http://localhost:18772');
+                """) { _, _ in probed = true }
+            precondition(waitFor(2) { probed })
+            _ = waitFor(0.3) { false }
+            var empty: Bool?
+            tab.webView?.evaluateJavaScript("window.fixtureEmpty") { value, _ in empty = value as? Bool }
+            precondition(waitFor(2) { empty != nil })
+            precondition(empty == true, "No secret may reach the cross-origin frame even if the callback says failure")
             tab.tearDown()
         }
 

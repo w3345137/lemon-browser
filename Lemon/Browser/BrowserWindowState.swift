@@ -7,6 +7,8 @@ import WebKit
 @MainActor
 final class BrowserWindowState: NSObject, ObservableObject {
     let isPrivate: Bool
+    let isDemo: Bool
+    let websiteDataStore: WKWebsiteDataStore
     /// 普通窗口的会话身份。多窗口各自写 session.json 中自己的记录，
     /// 不再后开窗口覆盖先开窗口；无痕窗口不参与持久化。
     let windowSessionID: String
@@ -15,7 +17,13 @@ final class BrowserWindowState: NSObject, ObservableObject {
     private static var claimedWindowSessionIDs = Set<String>()
 
     @Published var tabs: [BrowserTab] = []
-    @Published var selectedTabID: BrowserTab.ID
+    @Published var selectedTabID: BrowserTab.ID {
+        didSet {
+            if oldValue != selectedTabID {
+                tabs.first(where: { $0.id == oldValue })?.dismissPageDialog()
+            }
+        }
+    }
     @Published var addressText = ""
     @Published var isAddressEditing = false
     @Published var isSidebarVisible = false
@@ -34,7 +42,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
     let downloads: DownloadStore
 
-    let bookmarks = BookmarkStore.shared
+    let bookmarks: BookmarkStore
     let credentials = CredentialStore.shared
     let history: HistoryStore
 
@@ -50,10 +58,16 @@ final class BrowserWindowState: NSObject, ObservableObject {
     private var pendingSelectionID: BrowserTab.ID?
     private var pendingCloseTabIDs: Set<BrowserTab.ID> = []
 
-    init(isPrivate: Bool = false) {
-        self.isPrivate = isPrivate
-        self.history = HistoryStore(isPrivate: isPrivate)
-        self.downloads = isPrivate ? DownloadStore(persistent: false) : .shared
+    init(isPrivate: Bool = false, isDemo: Bool = false) {
+        let ephemeral = isPrivate || isDemo
+        let dataStore: WKWebsiteDataStore = ephemeral ? .nonPersistent() : .default()
+        self.websiteDataStore = dataStore
+        self.isPrivate = ephemeral
+        self.isDemo = isDemo
+        self.bookmarks = isDemo ? BookmarkStore(inMemory: true) : .shared
+        self.isBookmarkBarVisible = !isDemo
+        self.history = ephemeral ? HistoryStore(isPrivate: true) : .shared
+        self.downloads = ephemeral ? DownloadStore(persistent: false, dataStore: dataStore) : .shared
         let restoredTabs: [BrowserTab]
         let restoredSelectedIndex: Int
         let restoredClosedTabs: [ClosedTabSnapshot]
@@ -61,7 +75,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         // 多窗口恢复：认领一条尚未被活窗口使用的会话记录；没有可认领的
         // 记录时给窗口分配新身份，旧版 pinnedTabURLs 迁移逻辑保持不变。
         let claimed: (windowID: String, snapshot: BrowserSessionSnapshot)?
-        if isPrivate {
+        if ephemeral {
             claimed = nil
             self.windowSessionID = UUID().uuidString
         } else if let claim = BrowserSessionStore.claimRestorableSession(
@@ -93,7 +107,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
             }
             restoredSelectedIndex = min(max(0, session.selectedIndex), restoredTabs.count - 1)
             restoredClosedTabs = session.closedTabs
-        } else if !isPrivate {
+        } else if !ephemeral {
             let legacyPinned = UserDefaults.standard.stringArray(forKey: "pinnedTabURLs.v1") ?? []
             UserDefaults.standard.removeObject(forKey: "pinnedTabURLs.v1")
             let pinned = legacyPinned.compactMap(URL.init(string:)).map { url in
@@ -105,7 +119,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
             restoredSelectedIndex = restoredTabs.count - 1
             restoredClosedTabs = []
         } else {
-            restoredTabs = [BrowserTab(isPrivate: true)]
+            restoredTabs = [BrowserTab(isPrivate: true, dataStore: dataStore)]
             restoredSelectedIndex = 0
             restoredClosedTabs = []
         }
@@ -117,7 +131,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         for tab in tabs {
             tab.windowState = self
         }
-        if isPrivate {
+        if ephemeral {
             selectedTab?.activate()
         } else {
             // 固定标签恢复 URL 之前，先把上次浏览器会话 Cookie 注入默认
@@ -165,7 +179,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     func openInNewTab(_ url: URL, select: Bool = true) {
-        let tab = BrowserTab(isPrivate: isPrivate, startURL: url)
+        let tab = BrowserTab(isPrivate: isPrivate, startURL: url, dataStore: websiteDataStore)
         tab.windowState = self
         insert(tab, after: selectedIndex, select: select)
         isAddressEditing = false
@@ -192,7 +206,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     func openPopup(with configuration: WKWebViewConfiguration) -> WKWebView {
-        let tab = BrowserTab(isPrivate: isPrivate)
+        let tab = BrowserTab(isPrivate: isPrivate, dataStore: websiteDataStore)
         tab.windowState = self
         let webView = tab.adoptPopupWebView(configuration: configuration)
         insert(tab, after: selectedIndex, select: true)
@@ -214,6 +228,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
             isAddressEditing = false
             syncAddressBar()
             requestPageFocus()
+            if let tab = selectedTab { tryAutomaticCredentialFill(tab) }
             return
         }
 
@@ -239,6 +254,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
                 self?.persistSession()
             }
             outgoing?.clearFindHighlights()
+            outgoing?.dismissPageDialog()
         }
         selectedTabID = id
         selectedTab?.activate()
@@ -248,6 +264,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         enforceTabLifecycle()
         persistSession()
         requestPageFocus()
+        if let tab = selectedTab { tryAutomaticCredentialFill(tab) }
     }
 
     private func requestPageFocus() {
@@ -302,7 +319,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     func duplicateTab(_ id: BrowserTab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }),
               let url = tabs[index].url else { return }
-        let copy = BrowserTab(isPrivate: isPrivate, startURL: url)
+        let copy = BrowserTab(isPrivate: isPrivate, startURL: url, dataStore: websiteDataStore)
         copy.windowState = self
         insert(copy, after: index, select: true)
         requestPageFocus()
@@ -349,7 +366,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     func reopenClosedTab() {
         guard let item = closedTabs.first else { return }
         closedTabs.removeFirst()
-        let tab = BrowserTab(isPrivate: isPrivate, startURL: item.url)
+        let tab = BrowserTab(isPrivate: isPrivate, startURL: item.url, dataStore: websiteDataStore)
         tab.windowState = self
         if !item.title.isEmpty {
             tab.title = item.title
@@ -416,7 +433,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     private var automaticFillInFlight = Set<UUID>()
 
     func tryAutomaticCredentialFill(_ tab: BrowserTab) {
-        guard !isPrivate, selectedTab === tab, let view = tab.webView,
+        guard !isPrivate, selectedTab === tab, !tab.isLoading, tab.navigationError == nil, let view = tab.webView,
               let url = view.url, url.scheme == "https" else { return }
         let matches = credentials.credentials(for: url)
         let preferred = UserDefaults.standard.dictionary(forKey: "preferredFillAccounts") as? [String: String] ?? [:]
@@ -464,6 +481,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     func fillCredential(_ credential: WebCredential) {
+        guard !isDemo else { return }
         cancelCredentialFill()
         guard let tab = selectedTab else { return }
         do {
@@ -753,7 +771,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     private func openBlankTabAndFocusAddress() {
-        let tab = BrowserTab(isPrivate: isPrivate)
+        let tab = BrowserTab(isPrivate: isPrivate, dataStore: websiteDataStore)
         tab.windowState = self
         insert(tab, after: selectedIndex, select: true)
         addressText = ""
@@ -776,6 +794,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         if select {
             selectedTabID = tab.id
             tab.activate()
+            tryAutomaticCredentialFill(tab)
         }
         enforceTabLifecycle()
         persistSession()

@@ -78,6 +78,21 @@ struct TestBookmarkMoves {
         store.removeSavedBookmark(for: savedURL)
         precondition(store.bookmarkDestination(for: savedURL) == nil)
 
+        let corruptURL = testRoot.appendingPathComponent("corrupt.json")
+        let corrupt = Data("not a bookmark file".utf8)
+        try corrupt.write(to: corruptURL)
+        let damaged = BookmarkStore(storageURL: corruptURL)
+        precondition(damaged.storageError != nil)
+        damaged.addToBar(title: "Must not overwrite", url: savedURL)
+        let preserved = try Data(contentsOf: corruptURL)
+        precondition(preserved == corrupt && damaged.barItems.isEmpty)
+
+        let before = store.barItems
+        let storage = testRoot.appendingPathComponent("bookmarks.json")
+        try FileManager.default.removeItem(at: storage)
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: false)
+        store.addToBar(title: "Write failure", url: savedURL)
+        precondition(store.storageError != nil && store.barItems == before)
         print("bookmark-move-tests=passed")
     }
 }

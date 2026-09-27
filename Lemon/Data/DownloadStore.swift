@@ -10,6 +10,7 @@ final class DownloadStore: NSObject, ObservableObject {
     @Published private(set) var items: [DownloadItem] = []
 
     private let persistent: Bool
+    private let sessionDataStore: WKWebsiteDataStore?
     private let storageURL: URL
     private let resumeFolder: URL
     private var activeDownloads: [UUID: WKDownload] = [:]
@@ -20,8 +21,9 @@ final class DownloadStore: NSObject, ObservableObject {
     private var pendingRetries = Set<UUID>()
     private let destinationFolder: URL
 
-    init(persistent: Bool, downloadsFolder: URL? = nil) {
+    init(persistent: Bool, downloadsFolder: URL? = nil, dataStore: WKWebsiteDataStore? = nil) {
         self.persistent = persistent
+        self.sessionDataStore = dataStore
         self.destinationFolder = downloadsFolder ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!.resolvingSymlinksInPath()
         let folder = persistent ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Lemon", isDirectory: true)
@@ -150,6 +152,8 @@ final class DownloadStore: NSObject, ObservableObject {
     }
 
     func delete(_ item: DownloadItem) async throws {
+        guard let item = items.first(where: { $0.id == item.id }) else { return }
+        let ownsFinalFile = item.completedFileIdentity != nil || item.state == .completed
         pendingRetries.remove(item.id)
         let download = activeDownloads[item.id]
         detach(item.id)
@@ -162,7 +166,16 @@ final class DownloadStore: NSObject, ObservableObject {
         removeResumeData(for: item.id)
         do {
             if let partial = item.partialURL { try DownloadFileDeletion.removeIfPresent(fileURL: partial) }
-            try DownloadFileDeletion.removeIfPresent(fileURL: item.fileURL)
+            // Until completion this is only a reserved name, not our file.
+            if ownsFinalFile, FileManager.default.fileExists(atPath: item.fileURL.path) {
+                guard let identity = item.completedFileIdentity,
+                      identity == Self.fileIdentity(item.fileURL) else {
+                    throw NSError(domain: "Lemon.Download", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "无法确认该文件仍是原下载文件，已保留。请在访达中检查后删除。"
+                    ])
+                }
+                try DownloadFileDeletion.removeIfPresent(fileURL: item.fileURL)
+            }
         } catch {
             update(item.id) { $0.state = .failed; $0.errorDescription = "删除失败：\(error.localizedDescription)" }
             persist()
@@ -278,6 +291,7 @@ final class DownloadStore: NSObject, ObservableObject {
                 $0.fileURL = destination
                 $0.filename = destination.lastPathComponent
                 $0.partialURL = nil
+                $0.completedFileIdentity = Self.fileIdentity(destination)
                 $0.receivedBytes = actualBytes
                 $0.expectedBytes = actualBytes
                 $0.errorDescription = nil
@@ -314,6 +328,14 @@ final class DownloadStore: NSObject, ObservableObject {
         persist()
     }
 
+    private static func fileIdentity(_ url: URL) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let device = attributes[.systemNumber] as? NSNumber,
+              let inode = attributes[.systemFileNumber] as? NSNumber,
+              let created = attributes[.creationDate] as? Date else { return nil }
+        return "\(device):\(inode):\(created.timeIntervalSince1970)"
+    }
+
     private func update(_ id: UUID, mutate: (inout DownloadItem) -> Void) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         mutate(&items[index])
@@ -337,7 +359,7 @@ final class DownloadStore: NSObject, ObservableObject {
 
     private func resumeWebView() -> WKWebView {
         if let resumeHost { return resumeHost }
-        let view = WebKitFactory.makeWebView(isPrivate: !persistent)
+        let view = WebKitFactory.makeWebView(isPrivate: !persistent, dataStore: sessionDataStore)
         resumeHost = view
         return view
     }

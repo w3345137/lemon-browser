@@ -16,6 +16,7 @@ struct HistoryEntry: Identifiable, Codable, Hashable {
 
 @MainActor
 final class HistoryStore: ObservableObject {
+    static let shared = HistoryStore(isPrivate: false)
     @Published private(set) var entries: [HistoryEntry] = []
 
     private let url: URL

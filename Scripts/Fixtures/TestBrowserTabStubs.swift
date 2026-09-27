@@ -23,6 +23,7 @@ final class ContentBlocker {
 }
 
 struct WebCredential {
+    var scope: String = "https://example.com"
     let username: String
 }
 

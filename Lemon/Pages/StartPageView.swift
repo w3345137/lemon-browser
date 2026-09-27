@@ -11,7 +11,9 @@ struct StartPageView: View {
                 VStack(alignment: .leading, spacing: 28) {
                     Spacer().frame(height: 12)
                     header
-                    favorites
+                    if !state.isDemo {
+                        favorites
+                    }
                     if !state.isPrivate {
                         recents
                     } else {
@@ -28,13 +30,13 @@ struct StartPageView: View {
 
     private var background: some View {
         ZStack {
-            if state.isPrivate {
+            if state.isPrivate && !state.isDemo {
                 Color(red: 0.10, green: 0.10, blue: 0.12)
             } else {
                 Color(nsColor: .windowBackgroundColor)
             }
             LinearGradient(
-                colors: state.isPrivate
+                colors: state.isPrivate && !state.isDemo
                     ? [Color.white.opacity(0.04), .clear]
                     : [Color.white.opacity(0.62), .clear],
                 startPoint: .topLeading,
@@ -46,9 +48,9 @@ struct StartPageView: View {
 
     private var header: some View {
         VStack(alignment: .center, spacing: 5) {
-            Text(state.isPrivate ? "无痕浏览" : "起始页")
+            Text(state.isDemo ? "演示窗口" : (state.isPrivate ? "无痕浏览" : "起始页"))
                 .font(.system(size: 30, weight: .semibold))
-            Text(state.isPrivate ? "此窗口不会保存历史记录、搜索和自动填充信息。" : "地址栏和书签会在新标签页打开。")
+            Text(state.isDemo ? "临时浏览环境，不载入个人书签、历史或登录信息。" : (state.isPrivate ? "此窗口不会保存历史记录、搜索和自动填充信息。" : "地址栏和书签会在新标签页打开。"))
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         }
@@ -123,7 +125,7 @@ struct StartPageView: View {
 
     private var privateCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("无痕窗口使用单独的 WebKit 数据容器", systemImage: "eye.slash")
+            Label(state.isDemo ? "演示窗口使用临时 WebKit 数据容器" : "无痕窗口使用单独的 WebKit 数据容器", systemImage: "eye.slash")
                 .font(.system(size: 14, weight: .medium))
             Text("关闭窗口后，此会话的 Cookie、缓存和历史都不会留下。")
                 .font(.callout)

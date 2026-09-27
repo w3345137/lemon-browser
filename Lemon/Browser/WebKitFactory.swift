@@ -3,9 +3,9 @@ import WebKit
 
 enum WebKitFactory {
     @MainActor
-    static func makeConfiguration(isPrivate: Bool) -> WKWebViewConfiguration {
+    static func makeConfiguration(isPrivate: Bool, dataStore: WKWebsiteDataStore? = nil) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = isPrivate ? .nonPersistent() : .default()
+        configuration.websiteDataStore = dataStore ?? (isPrivate ? .nonPersistent() : .default())
         configuration.applicationNameForUserAgent = SafariIdentity.applicationName
         configuration.defaultWebpagePreferences.preferredContentMode = .desktop
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -47,8 +47,8 @@ enum WebKitFactory {
     }
 
     @MainActor
-    static func makeWebView(isPrivate: Bool) -> WKWebView {
-        let webView = WKWebView(frame: .zero, configuration: makeConfiguration(isPrivate: isPrivate))
+    static func makeWebView(isPrivate: Bool, dataStore: WKWebsiteDataStore? = nil) -> WKWebView {
+        let webView = WKWebView(frame: .zero, configuration: makeConfiguration(isPrivate: isPrivate, dataStore: dataStore))
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsMagnification = true
         webView.allowsLinkPreview = true

@@ -23,6 +23,8 @@ struct DownloadItem: Identifiable, Codable, Equatable {
     var partialURL: URL? = nil
     var requestMethod: String? = nil
     var validatesLength: Bool? = nil
+    /// Identity of the file we actually produced, not merely a reserved path.
+    var completedFileIdentity: String? = nil
 
     var progress: Double {
         guard expectedBytes > 0 else { return state == .completed ? 1 : 0 }

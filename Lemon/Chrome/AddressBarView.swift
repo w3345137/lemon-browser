@@ -49,8 +49,10 @@ private struct AddressBarContent: View {
             pill
                 .frame(maxWidth: .infinity)
 
-            utilityButton("gearshape", help: "设置") {
-                openSettings()
+            if !state.isDemo {
+                utilityButton("gearshape", help: "设置") {
+                    openSettings()
+                }
             }
 
             utilityButton("clock.arrow.circlepath", help: "历史记录") {
@@ -81,9 +83,11 @@ private struct AddressBarContent: View {
                 Divider()
                 Button("历史记录") { state.showHistory() }
                 Button("下载") { state.showDownloads() }
-                Button("书签管理器") {
-                    SettingsNavigation.shared.selection = .bookmarks
-                    openSettings()
+                if !state.isDemo {
+                    Button("书签管理器") {
+                        SettingsNavigation.shared.selection = .bookmarks
+                        openSettings()
+                    }
                 }
                 Button(state.isBookmarkBarVisible ? "隐藏书签栏" : "显示书签栏") {
                     state.isBookmarkBarVisible.toggle()
@@ -94,7 +98,9 @@ private struct AddressBarContent: View {
                     NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Safari.app"))
                 }
                     .disabled(tab.webView == nil)
-                Button("设置…") { openSettings() }
+                if !state.isDemo {
+                    Button("设置…") { openSettings() }
+                }
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 15, weight: .semibold))
@@ -185,7 +191,7 @@ private struct AddressBarContent: View {
             }
 
             if let tab = state.selectedTab, tab.hasLoadedPage, !state.isAddressEditing {
-                let siteCredentials = credentialStore.credentials(for: tab.url)
+                let siteCredentials = state.isDemo ? [] : credentialStore.credentials(for: tab.url)
                 if !siteCredentials.isEmpty {
                     Menu {
                         ForEach(siteCredentials) { credential in
@@ -567,8 +573,9 @@ private struct SiteInformationPanel: View {
             .padding(14)
             Divider()
 
-            VStack(spacing: 2) {
-                ForEach(SitePermissionKind.allCases) { kind in
+            if !state.isDemo {
+                VStack(spacing: 2) {
+                    ForEach(SitePermissionKind.allCases) { kind in
                     HStack(spacing: 10) {
                         Image(systemName: kind.symbol)
                             .foregroundStyle(.secondary)
@@ -589,7 +596,7 @@ private struct SiteInformationPanel: View {
                     }
                     .frame(height: 34)
                 }
-                ForEach(permissions.externalApplicationSchemes(for: host), id: \.self) { scheme in
+                    ForEach(permissions.externalApplicationSchemes(for: host), id: \.self) { scheme in
                     HStack(spacing: 10) {
                         Image(systemName: "arrow.up.forward.app")
                             .foregroundStyle(.secondary)
@@ -610,15 +617,16 @@ private struct SiteInformationPanel: View {
                     }
                     .frame(height: 34)
                 }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
 
             if AVCaptureDevice.authorizationStatus(for: .video) == .denied || AVCaptureDevice.authorizationStatus(for: .audio) == .denied {
                 Text("摄像头或麦克风被 macOS 禁止。需在系统设置 → 隐私与安全性中允许 Lemon。")
                     .font(.system(size: 11)).foregroundStyle(.orange).padding(.horizontal, 14)
             }
-            if permissionChanged {
+            if permissionChanged && !state.isDemo {
                 HStack {
                     Text("重新载入后应用权限更改").foregroundStyle(.secondary)
                     Spacer()
@@ -629,28 +637,32 @@ private struct SiteInformationPanel: View {
 
             Divider()
 
-            HStack {
-                Button("重置权限") {
-                    permissions.reset(host: host)
-                    permissionChanged = true
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+            if !state.isDemo {
+                HStack {
+                    Button("重置权限") {
+                        permissions.reset(host: host)
+                        permissionChanged = true
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
 
-                Spacer()
+                    Spacer()
 
-                Button("清除网站数据…") {
-                    state.clearCurrentWebsiteData()
+                    Button("清除网站数据…") {
+                        state.clearCurrentWebsiteData()
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
+                .font(.system(size: 12))
+                .padding(12)
             }
-            .font(.system(size: 12))
-            .padding(12)
-            Button("所有网站数据与权限…") {
-                SettingsNavigation.shared.selection = .websites
-                openSettings()
+            if !state.isDemo {
+                Button("所有网站数据与权限…") {
+                    SettingsNavigation.shared.selection = .websites
+                    openSettings()
+                }
+                .buttonStyle(.link).padding([.horizontal, .bottom], 12)
             }
-            .buttonStyle(.link).padding([.horizontal, .bottom], 12)
         }
         .frame(width: 380)
         .task(id: tab.url) {

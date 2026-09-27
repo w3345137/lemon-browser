@@ -642,7 +642,7 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
         selectedState = selected
         draggingState = dragging
         pinnedState = tab.isPinned
-        privateState = tab.isPrivate
+        privateState = tab.isPrivate && tab.windowState?.isDemo != true
         playingAudio = tab.mediaState == .playing
         mutedAudio = tab.isAudioMuted
         self.onClose = onClose

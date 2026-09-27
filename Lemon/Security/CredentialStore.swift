@@ -171,7 +171,7 @@ final class CredentialStore: ObservableObject {
         var components = URLComponents()
         components.scheme = scheme
         components.host = host
-        components.port = url.port
+        components.port = (scheme == "https" && url.port == 443) || (scheme == "http" && url.port == 80) ? nil : url.port
         return components.string
     }
 
@@ -182,10 +182,9 @@ final class CredentialStore: ObservableObject {
 
     nonisolated static func sharesSite(origin: String, with pageURL: URL?) -> Bool {
         guard let pageScope = pageURL.flatMap(scope(for:)),
-              let messageScope = normalizedScope(origin),
-              let pageHost = URL(string: pageScope)?.host,
-              let messageHost = URL(string: messageScope)?.host else { return false }
-        return registrableDomain(pageHost) == registrableDomain(messageHost)
+              let messageScope = normalizedScope(origin) else { return false }
+        // A shared domain suffix is not permission to receive credentials.
+        return pageScope == messageScope
     }
 
     nonisolated static func registrableDomain(_ host: String) -> String {
