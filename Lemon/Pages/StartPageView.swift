@@ -170,5 +170,10 @@ private struct FavoriteTile: View {
         .onAppear {
             FaviconService.load(for: item.url) { favicon = $0 }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .lemonFaviconDidUpdate)) { notification in
+            guard notification.object as? String == FaviconService.originKey(for: item.url),
+                  let image = notification.userInfo?["image"] as? NSImage else { return }
+            favicon = image
+        }
     }
 }

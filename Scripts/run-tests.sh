@@ -19,7 +19,7 @@ run_test() {
   fi
   local output="$bin_dir/$name"
   echo "==> $name"
-  if ! xcrun swiftc -swift-version 5 "$@" -o "$output" 2>"$bin_dir/$name.build.log"; then
+  if ! xcrun swiftc -swift-version 5 -DLEMON_TEST_COMPATIBILITY_RESOURCES "$@" -o "$output" 2>"$bin_dir/$name.build.log"; then
     echo "    编译失败，日志：$bin_dir/$name.build.log"
     failures=$((failures + 1))
     return
@@ -34,6 +34,7 @@ TAB_HARNESS=(
   "$project_root/Scripts/Fixtures/TestBrowserTabStubs.swift"
   "$project_root/Lemon/Browser/BrowserTab.swift"
   "$project_root/Lemon/Browser/WebKitFactory.swift"
+  "$project_root/Lemon/Browser/MicrosoftLoginCompatibility.swift"
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift"
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
   "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
@@ -45,6 +46,7 @@ LIVE_HARNESS=(
   "$project_root/Scripts/Fixtures/TestBrowserTabLiveStubs.swift"
   "$project_root/Lemon/Browser/BrowserTab.swift"
   "$project_root/Lemon/Browser/WebKitFactory.swift"
+  "$project_root/Lemon/Browser/MicrosoftLoginCompatibility.swift"
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift"
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift"
   "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
@@ -74,6 +76,10 @@ run_test TestBrowserSession \
   "$project_root/Scripts/TestBrowserSession.swift" \
   "$project_root/Lemon/Data/BrowserSessionStore.swift"
 
+run_test TestHistorySearch \
+  "$project_root/Scripts/TestHistorySearch.swift" \
+  "$project_root/Lemon/Data/HistoryStore.swift"
+
 run_test TestWebContentCrash \
   "$project_root/Scripts/TestWebContentCrash.swift" \
   "${TAB_HARNESS[@]}"
@@ -90,8 +96,16 @@ run_test TestSlowPage \
   "$project_root/Scripts/TestSlowPage.swift" \
   "${TAB_HARNESS[@]}"
 
+run_test TestMicrosoftLoginDNR \
+  "$project_root/Scripts/TestMicrosoftLoginDNR.swift" \
+  "$project_root/Lemon/Browser/MicrosoftLoginCompatibility.swift"
+
 run_test TestFaviconPrivacy \
   "$project_root/Scripts/TestFaviconPrivacy.swift" \
+  "$project_root/Lemon/Support/FaviconService.swift"
+
+run_test TestFaviconIntegration \
+  "$project_root/Scripts/TestFaviconIntegration.swift" \
   "$project_root/Lemon/Support/FaviconService.swift"
 
 run_test TestMediaAudibility \
@@ -149,6 +163,7 @@ run_test TestDownloadIntegrity \
   "$project_root/Lemon/Data/DownloadItem.swift" \
   "$project_root/Lemon/Data/DownloadStore.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
+  "$project_root/Lemon/Browser/MicrosoftLoginCompatibility.swift" \
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift" \
   "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
@@ -160,6 +175,7 @@ run_test TestDownloadStore \
   "$project_root/Lemon/Data/DownloadItem.swift" \
   "$project_root/Lemon/Data/DownloadStore.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
+  "$project_root/Lemon/Browser/MicrosoftLoginCompatibility.swift" \
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift" \
   "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
@@ -171,6 +187,7 @@ run_test TestDownloadLive \
   "$project_root/Lemon/Data/DownloadItem.swift" \
   "$project_root/Lemon/Data/DownloadStore.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
+  "$project_root/Lemon/Browser/MicrosoftLoginCompatibility.swift" \
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift" \
   "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \
@@ -211,6 +228,7 @@ run_test TestWangfeiPlayback \
 run_test TestWebViewStack \
   "$project_root/Scripts/TestWebViewStack.swift" \
   "$project_root/Lemon/Browser/WebKitFactory.swift" \
+  "$project_root/Lemon/Browser/MicrosoftLoginCompatibility.swift" \
   "$project_root/Lemon/Browser/MediaAudibilityBridge.swift" \
   "$project_root/Lemon/Browser/ExternalApplicationPolicy.swift" \
   "$project_root/Lemon/Browser/TencentMeetingPlaybackBridge.swift" \

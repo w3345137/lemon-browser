@@ -3,9 +3,11 @@ import WebKit
 
 // 真机级 BrowserTab 测试的桩：CredentialBridge / MediaAudibilityBridge /
 // CredentialStore 使用真实实现，其余外部依赖用最小桩。
+#if !LEMON_REAL_SAFARI_IDENTITY
 enum SafariIdentity {
     static let applicationName = "LemonLiveTest"
 }
+#endif
 
 final class ContentBlocker {
     static let shared = ContentBlocker()
@@ -14,6 +16,7 @@ final class ContentBlocker {
 
 enum FaviconService {
     static func load(for url: URL, completion: @escaping (NSImage?) -> Void) {}
+    static func loadFromPage(_ url: URL, webView: WKWebView, completion: @escaping (NSImage?) -> Void) {}
 }
 
 enum URLInput {

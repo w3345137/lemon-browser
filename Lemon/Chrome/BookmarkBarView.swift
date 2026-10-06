@@ -989,6 +989,8 @@ private final class NativeBookmarkCollectionItem: NSCollectionViewItem {
     private let iconView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private var representedID: BookmarkItem.ID?
+    private var representedIconKey: String?
+    private var faviconObserver: NSObjectProtocol?
     private var hovering = false
     private var dropTargeted = false
     private var draggingState = false
@@ -1013,6 +1015,20 @@ private final class NativeBookmarkCollectionItem: NSCollectionViewItem {
         titleField.lineBreakMode = .byTruncatingTail
         view.addSubview(iconView)
         view.addSubview(titleField)
+        faviconObserver = NotificationCenter.default.addObserver(
+            forName: .lemonFaviconDidUpdate, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let key = notification.object as? String,
+                  key == self.representedIconKey,
+                  let image = notification.userInfo?["image"] as? NSImage else { return }
+            self.iconView.image = image
+            self.iconView.contentTintColor = nil
+        }
+    }
+
+    deinit {
+        if let faviconObserver { NotificationCenter.default.removeObserver(faviconObserver) }
     }
 
     override func viewDidLayout() {
@@ -1028,6 +1044,7 @@ private final class NativeBookmarkCollectionItem: NSCollectionViewItem {
 
     func configure(with item: BookmarkItem, dragging: Bool = false) {
         representedID = item.id
+        representedIconKey = item.isFolder ? nil : FaviconService.originKey(for: item.url)
         draggingState = dragging
         titleField.stringValue = item.title
         titleField.isHidden = item.title.isEmpty
@@ -1546,6 +1563,12 @@ private struct BookmarkFolderRow: View {
             if !item.isFolder {
                 FaviconService.load(for: item.url) { favicon = $0 }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lemonFaviconDidUpdate)) { notification in
+            guard !item.isFolder,
+                  notification.object as? String == FaviconService.originKey(for: item.url),
+                  let image = notification.userInfo?["image"] as? NSImage else { return }
+            favicon = image
         }
     }
 

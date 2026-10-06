@@ -1,0 +1,8 @@
+[
+  {"id": 1, "priority": 1,
+   "action": {"type": "redirect", "redirect": {"regexSubstitution": "https://aadcdn.msauth.net/\\1"}},
+   "condition": {"regexFilter": "^https://aadcdn\\.msftauth\\.net/(shared/.*)", "resourceTypes": ["script", "stylesheet"]}},
+  {"id": 2, "priority": 1,
+   "action": {"type": "redirect", "redirect": {"regexSubstitution": "https://aadcdn.msauth.net/\\1"}},
+   "condition": {"regexFilter": "^https://aadcdn\\.msftauth\\.net/(ests/.*)", "resourceTypes": ["script", "stylesheet"]}}
+]

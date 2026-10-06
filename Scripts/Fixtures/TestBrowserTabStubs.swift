@@ -35,6 +35,7 @@ enum CredentialStore {
 
 enum FaviconService {
     static func load(for url: URL, completion: @escaping (NSImage?) -> Void) {}
+    static func loadFromPage(_ url: URL, webView: WKWebView, completion: @escaping (NSImage?) -> Void) {}
 }
 
 enum URLInput {

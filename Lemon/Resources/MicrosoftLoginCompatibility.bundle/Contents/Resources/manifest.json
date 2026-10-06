@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Lemon 微软登录静态资源兼容",
+  "description": "仅将微软登录的指定静态资源请求交给官方备用CDN；不读取页面、表单或Cookie。",
+  "version": "1.0",
+  "permissions": ["declarativeNetRequestWithHostAccess"],
+  "host_permissions": ["https://aadcdn.msftauth.net/*", "https://aadcdn.msauth.net/*", "https://login.microsoftonline.com/*", "https://login.windows.net/*"],
+  "declarative_net_request": {"rule_resources": [{"id": "cdn", "enabled": true, "path": "rules.json"}]}
+}

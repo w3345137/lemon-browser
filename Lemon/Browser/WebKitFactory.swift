@@ -6,6 +6,7 @@ enum WebKitFactory {
     static func makeConfiguration(isPrivate: Bool, dataStore: WKWebsiteDataStore? = nil) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = dataStore ?? (isPrivate ? .nonPersistent() : .default())
+        MicrosoftLoginResourcePolicy.configure(configuration)
         configuration.applicationNameForUserAgent = SafariIdentity.applicationName
         configuration.defaultWebpagePreferences.preferredContentMode = .desktop
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true

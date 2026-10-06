@@ -4,6 +4,8 @@ import SwiftUI
 struct HistoryPanel: View {
     @ObservedObject var state: BrowserWindowState
     @ObservedObject private var history: HistoryStore
+    @State private var searchText = ""
+    @FocusState private var isSearchFocused: Bool
 
     init(state: BrowserWindowState) {
         self.state = state
@@ -11,19 +13,47 @@ struct HistoryPanel: View {
     }
 
     var body: some View {
+        let groups = history.grouped(matching: searchText)
         VStack(spacing: 0) {
             panelHeader("历史记录", systemImage: "clock.arrow.circlepath") {
                 Button("清除") { history.clear() }
                     .buttonStyle(.borderless)
                     .disabled(history.entries.isEmpty)
             }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("搜索历史记录", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .focused($isSearchFocused)
+                    .accessibilityLabel("搜索历史记录，按标题或网址筛选")
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                        isSearchFocused = true
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("清空搜索")
+                    .accessibilityLabel("清空历史记录搜索")
+                }
+            }
+            .font(.system(size: 13))
+            .padding(9)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
             Divider()
             if history.entries.isEmpty {
                 emptyState("暂无历史记录", systemImage: "clock")
+            } else if groups.isEmpty {
+                emptyState("没有匹配的历史记录", systemImage: "magnifyingglass")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(history.grouped, id: \.0) { group in
+                        ForEach(groups, id: \.0) { group in
                             Text(group.0)
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(.secondary)

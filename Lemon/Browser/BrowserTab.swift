@@ -243,6 +243,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     func stopLoading() {
+        navigationPolicyRevision = UUID()
         dismissSlowPageNotice()
         loadingWasStopped = true
         webView?.stopLoading()
@@ -409,6 +410,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
     private var pendingCredentialCapture: PendingCredentialCapture?
     private(set) var navigationRevision = UUID()
+    private var navigationPolicyRevision = UUID()
     private var credentialCaptureWorkItem: DispatchWorkItem?
     /// 延迟后检查 SPA 表单是否已消失；经过时间不代表登录成功。
     static var credentialCaptureConfirmDelay: TimeInterval = 6
@@ -691,6 +693,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     private func releaseWebView() {
+        navigationPolicyRevision = UUID()
         dismissSlowPageNotice()
         if let view = webView {
             view.stopLoading()
@@ -788,7 +791,11 @@ extension BrowserTab: WKNavigationDelegate {
                 favicon = NSWorkspace.shared.icon(forFile: url.path)
             } else if !isPrivate {
                 FaviconService.load(for: url) { [weak self] image in
-                    guard let self, self.url == url else { return }
+                    guard let self, self.url == url, let image else { return }
+                    self.favicon = image
+                }
+                FaviconService.loadFromPage(url, webView: webView) { [weak self] image in
+                    guard let self, self.url == url, let image else { return }
                     self.favicon = image
                 }
             }
@@ -854,7 +861,11 @@ extension BrowserTab: WKNavigationDelegate {
         if navigationAction.shouldPerformDownload { return .download }
         if navigationAction.targetFrame?.isMainFrame == true,
            let destination = navigationAction.request.url {
+            let policyRevision = UUID()
+            navigationPolicyRevision = policyRevision
             pendingRequest = navigationAction.request
+            await MicrosoftLoginResourcePolicy.installIfNeeded(for: destination, on: webView)
+            guard self.webView === webView, navigationPolicyRevision == policyRevision else { return .cancel }
             applySitePlaybackIdentity(for: destination, to: webView)
         }
         return .allow

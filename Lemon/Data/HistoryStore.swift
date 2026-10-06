@@ -22,12 +22,16 @@ final class HistoryStore: ObservableObject {
     private let url: URL
     private let isPrivate: Bool
 
-    init(isPrivate: Bool) {
+    init(isPrivate: Bool, storageURL: URL? = nil) {
         self.isPrivate = isPrivate
-        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Lemon", isDirectory: true)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        url = folder.appendingPathComponent("history.json")
+        if let storageURL {
+            url = storageURL
+        } else {
+            let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("Lemon", isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            url = folder.appendingPathComponent("history.json")
+        }
 
         if !isPrivate, let data = try? Data(contentsOf: url),
            let decoded = try? JSONDecoder().decode([HistoryEntry].self, from: data) {
@@ -60,6 +64,11 @@ final class HistoryStore: ObservableObject {
     }
 
     var grouped: [(String, [HistoryEntry])] {
+        grouped(matching: "")
+    }
+
+    /// 弹层搜索全部已保存记录，不沿用地址栏建议默认的六条上限。
+    func grouped(matching query: String) -> [(String, [HistoryEntry])] {
         let calendar = Calendar.current
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
@@ -70,7 +79,7 @@ final class HistoryStore: ObservableObject {
         var bucket: [String: [HistoryEntry]] = [:]
         var order: [String] = []
 
-        for entry in entries {
+        for entry in search(query, limit: entries.count) {
             let key: String
             if calendar.isDateInToday(entry.visitedAt) {
                 key = "今天"
