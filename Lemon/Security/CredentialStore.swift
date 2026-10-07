@@ -153,7 +153,8 @@ final class CredentialStore: ObservableObject {
         guard let normalized = normalizedScope(scope), !password.isEmpty else { return .unavailable }
         do {
             guard let stored = try lookup(WebCredential(scope: normalized, username: username)) else { return .save }
-            return stored == password ? .unchanged : .update
+            // Passwords must match bytes, without Unicode canonical equivalence.
+            return stored.utf8.elementsEqual(password.utf8) ? .unchanged : .update
         } catch {
             return .unavailable
         }
