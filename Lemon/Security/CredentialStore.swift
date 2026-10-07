@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 struct WebCredential: Identifiable, Hashable {
@@ -28,6 +29,10 @@ enum CredentialStoreError: LocalizedError {
             return SecCopyErrorMessageString(status, nil) as String? ?? "Keychain 错误：\(status)"
         }
     }
+}
+
+enum CredentialSaveDecision: Equatable {
+    case save, update, unchanged, unavailable
 }
 
 @MainActor
@@ -104,14 +109,20 @@ final class CredentialStore: ObservableObject {
         throw CredentialStoreError.keychain(errSecItemNotFound)
     }
 
-    private func password(for credential: WebCredential, service: String) throws -> String? {
-        let query: [String: Any] = [
+    private func password(for credential: WebCredential, service: String, allowsAuthentication: Bool = true) throws -> String? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: credential.id,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
+        if !allowsAuthentication {
+            // A background save decision must not open a Keychain authorization dialog.
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
@@ -120,6 +131,32 @@ final class CredentialStore: ObservableObject {
             throw CredentialStoreError.keychain(errSecDecode)
         }
         return password
+    }
+
+    func saveDecision(scope: String, username: String, password: String) -> CredentialSaveDecision {
+        Self.saveDecision(scope: scope, username: username, password: password) { credential in
+            if let stored = try self.password(for: credential, service: Self.service, allowsAuthentication: false) {
+                return stored
+            }
+            return try self.password(for: credential, service: Self.legacyService, allowsAuthentication: false)
+        }
+    }
+
+    /// Compare the actual Keychain value rather than the possibly stale account list.
+    /// A failed read is unknown, not evidence that the password changed or is absent.
+    static func saveDecision(
+        scope: String,
+        username: String,
+        password: String,
+        lookup: (WebCredential) throws -> String?
+    ) -> CredentialSaveDecision {
+        guard let normalized = normalizedScope(scope), !password.isEmpty else { return .unavailable }
+        do {
+            guard let stored = try lookup(WebCredential(scope: normalized, username: username)) else { return .save }
+            return stored == password ? .unchanged : .update
+        } catch {
+            return .unavailable
+        }
     }
 
     func delete(_ credential: WebCredential) throws {

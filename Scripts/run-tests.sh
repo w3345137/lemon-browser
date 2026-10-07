@@ -157,6 +157,10 @@ run_test TestCredentialSite \
   "$project_root/Scripts/TestCredentialSite.swift" \
   "$project_root/Lemon/Security/CredentialStore.swift"
 
+run_test TestCredentialSaveDecision \
+  "$project_root/Scripts/TestCredentialSaveDecision.swift" \
+  "$project_root/Lemon/Security/CredentialStore.swift"
+
 run_test TestDownloadIntegrity \
   "$project_root/Scripts/TestDownloadIntegrity.swift" \
   "$project_root/Scripts/Fixtures/TestWebKitFactoryStubs.swift" \

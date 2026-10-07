@@ -541,14 +541,19 @@ final class BrowserWindowState: NSObject, ObservableObject {
     @Published var pendingCredentialOffer: PendingCredentialOffer?
 
     func offerToSaveCredential(scope: String, username: String, password: String) {
-        let existing = credentials.credentials.contains {
-            $0.scope == scope && $0.username == username
+        guard !isPrivate, let scope = CredentialStore.normalizedScope(scope) else { return }
+        let decision = credentials.saveDecision(scope: scope, username: username, password: password)
+        switch decision {
+        case .unchanged, .unavailable:
+            return
+        case .save, .update:
+            break
         }
         pendingCredentialOffer = PendingCredentialOffer(
             scope: scope,
             username: username,
             password: password,
-            isUpdate: existing
+            isUpdate: decision == .update
         )
     }
 
