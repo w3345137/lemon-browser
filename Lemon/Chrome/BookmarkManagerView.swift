@@ -2,12 +2,19 @@ import AppKit
 import SwiftUI
 
 struct BookmarkManagerView: View {
-    @ObservedObject private var store = BookmarkStore.shared
+    @ObservedObject private var store: BookmarkStore
+    private weak var windowState: BrowserWindowState?
     @State private var selectedFolderID: BookmarkItem.ID?
     @State private var selectedItemID: BookmarkItem.ID?
     @State private var query = ""
     @State private var editor: BookmarkEditorState?
     @State private var pendingDeletion: BookmarkItem?
+
+    @MainActor
+    init(store: BookmarkStore? = nil, windowState: BrowserWindowState? = nil) {
+        _store = ObservedObject(wrappedValue: store ?? .shared)
+        self.windowState = windowState
+    }
 
     private var displayedItems: [BookmarkItem] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -186,7 +193,8 @@ struct BookmarkManagerView: View {
             selectedFolderID = item.id
             query = ""
         } else {
-            IncomingBrowserURL.deliver(item.url)
+            if let windowState { windowState.openInNewTab(item.url) }
+            else { IncomingBrowserURL.deliver(item.url) }
         }
     }
 

@@ -34,6 +34,13 @@ final class SessionImportServer: ObservableObject {
     @Published private(set) var statusText = ""
 
     private var listener: NWListener?
+    private let credentials: CredentialStore
+    private let dataStore: WKWebsiteDataStore
+
+    init(credentials: CredentialStore? = nil, dataStore: WKWebsiteDataStore? = nil) {
+        self.credentials = credentials ?? .shared
+        self.dataStore = dataStore ?? .default()
+    }
 
     func start() throws {
         stop()
@@ -165,7 +172,7 @@ final class SessionImportServer: ObservableObject {
     }
 
     private func install(_ imported: [ImportedCookie]) async -> Int {
-        let store = WKWebsiteDataStore.default().httpCookieStore
+        let store = dataStore.httpCookieStore
         var count = 0
         for item in imported {
             guard !item.name.isEmpty, !item.domain.isEmpty else { continue }
@@ -210,7 +217,7 @@ final class SessionImportServer: ObservableObject {
                 continue
             }
             do {
-                try CredentialStore.shared.save(
+                try credentials.save(
                     scope: scope,
                     username: item.username,
                     password: item.password,
@@ -221,7 +228,7 @@ final class SessionImportServer: ObservableObject {
                 skippedCount += 1
             }
         }
-        CredentialStore.shared.refresh()
+        credentials.refresh()
         return (importedCount, skippedCount)
     }
 
@@ -234,7 +241,7 @@ final class SessionImportServer: ObservableObject {
                 continue
             }
             do {
-                let stored = try CredentialStore.shared.password(
+                let stored = try credentials.password(
                     for: WebCredential(scope: scope, username: item.username)
                 )
                 if stored == item.password {

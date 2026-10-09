@@ -80,6 +80,10 @@ run_test TestHistorySearch \
   "$project_root/Scripts/TestHistorySearch.swift" \
   "$project_root/Lemon/Data/HistoryStore.swift"
 
+run_test TestStartPageStore \
+  "$project_root/Scripts/TestStartPageStore.swift" \
+  "$project_root/Lemon/Data/StartPageStore.swift"
+
 run_test TestWebContentCrash \
   "$project_root/Scripts/TestWebContentCrash.swift" \
   "${TAB_HARNESS[@]}"
@@ -135,6 +139,26 @@ run_test TestBookmarkMoves \
 run_test TestDemoBookmarks \
   "$project_root/Scripts/TestDemoBookmarks.swift" \
   "$project_root/Lemon/Data/BookmarkStore.swift"
+
+run_test TestCleanProfileStores \
+  "$project_root/Scripts/TestCleanProfileStores.swift" \
+  "$project_root/Lemon/Data/HistoryStore.swift" \
+  "$project_root/Lemon/Data/SitePermissionStore.swift" \
+  "$project_root/Lemon/Security/CredentialStore.swift"
+
+# 此测试不使用 BrowserWindowState 桩，覆盖全部商店版生产 Swift 源码。
+PROFILE_HARNESS=()
+while IFS= read -r source; do
+  case "$source" in
+    */SessionImportServer.swift|*/SessionImportRequestPolicy.swift|*/PasswordCSVImporter.swift|*/WangfeiPlaybackBridge.swift) continue ;;
+  esac
+  PROFILE_HARNESS+=("$project_root/$source")
+done < <(cd "$project_root" && rg --files Lemon -g '*.swift' | sort)
+run_test TestCleanProfileIntegration -DAPP_STORE -DLEMON_PROFILE_TEST \
+  "$project_root/Scripts/TestCleanProfileIntegration.swift" "${PROFILE_HARNESS[@]}"
+
+run_test TestTabInteraction -DAPP_STORE -DLEMON_PROFILE_TEST \
+  "$project_root/Scripts/TestTabInteraction.swift" "${PROFILE_HARNESS[@]}"
 
 run_test TestBookmarkFolderLayout \
   "$project_root/Scripts/TestBookmarkFolderLayout.swift" \

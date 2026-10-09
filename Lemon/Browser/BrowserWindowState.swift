@@ -15,6 +15,19 @@ final class BrowserWindowState: NSObject, ObservableObject {
 
     /// 本次运行中已被活窗口认领的会话记录，启动/新建窗口时不能重复认领。
     private static var claimedWindowSessionIDs = Set<String>()
+    private static var activeDownloads: [String: DownloadStore] = [:]
+    private(set) static var hasUsedPersistentProfile = false
+
+    static func prepareDownloadsForQuit(completion: @escaping () -> Void) {
+        let group = DispatchGroup()
+        var visited = Set<ObjectIdentifier>()
+        let stores = Array(activeDownloads.values) + (hasUsedPersistentProfile ? [DownloadStore.shared] : [])
+        for store in stores where visited.insert(ObjectIdentifier(store)).inserted {
+            group.enter()
+            store.prepareToQuit { group.leave() }
+        }
+        group.notify(queue: .main, execute: completion)
+    }
 
     @Published var tabs: [BrowserTab] = []
     @Published var selectedTabID: BrowserTab.ID {
@@ -43,8 +56,10 @@ final class BrowserWindowState: NSObject, ObservableObject {
     let downloads: DownloadStore
 
     let bookmarks: BookmarkStore
-    let credentials = CredentialStore.shared
+    let credentials: CredentialStore
+    let permissions: SitePermissionStore
     let history: HistoryStore
+    let startPage: StartPageStore
 
     @Published var addressFocusToken = UUID()
     /// 用户显式切换页签后，PageStage 在目标 WKWebView 已经显示并挂到窗口后
@@ -62,11 +77,15 @@ final class BrowserWindowState: NSObject, ObservableObject {
         let ephemeral = isPrivate || isDemo
         let dataStore: WKWebsiteDataStore = ephemeral ? .nonPersistent() : .default()
         self.websiteDataStore = dataStore
-        self.isPrivate = ephemeral
+        self.isPrivate = isPrivate
         self.isDemo = isDemo
         self.bookmarks = isDemo ? BookmarkStore(inMemory: true) : .shared
-        self.isBookmarkBarVisible = !isDemo
-        self.history = ephemeral ? HistoryStore(isPrivate: true) : .shared
+        self.credentials = isDemo ? CredentialStore(inMemory: true) : .shared
+        self.permissions = ephemeral ? SitePermissionStore(inMemory: true) : .shared
+        self.isBookmarkBarVisible = true
+        self.history = isDemo ? HistoryStore(isPrivate: isPrivate, inMemory: true)
+            : (isPrivate ? HistoryStore(isPrivate: true) : .shared)
+        self.startPage = ephemeral ? StartPageStore(inMemory: true) : .shared
         self.downloads = ephemeral ? DownloadStore(persistent: false, dataStore: dataStore) : .shared
         let restoredTabs: [BrowserTab]
         let restoredSelectedIndex: Int
@@ -119,7 +138,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
             restoredSelectedIndex = restoredTabs.count - 1
             restoredClosedTabs = []
         } else {
-            restoredTabs = [BrowserTab(isPrivate: true, dataStore: dataStore)]
+            restoredTabs = [BrowserTab(isPrivate: isPrivate, dataStore: dataStore)]
             restoredSelectedIndex = 0
             restoredClosedTabs = []
         }
@@ -128,6 +147,8 @@ final class BrowserWindowState: NSObject, ObservableObject {
         self.selectedTabID = restoredTabs[restoredSelectedIndex].id
         self.closedTabs = restoredClosedTabs
         super.init()
+        Self.activeDownloads[windowSessionID] = downloads
+        if !ephemeral { Self.hasUsedPersistentProfile = true }
         for tab in tabs {
             tab.windowState = self
         }
@@ -436,7 +457,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         guard !isPrivate, selectedTab === tab, !tab.isLoading, tab.navigationError == nil, let view = tab.webView,
               let url = view.url, url.scheme == "https" else { return }
         let matches = credentials.credentials(for: url)
-        let preferred = UserDefaults.standard.dictionary(forKey: "preferredFillAccounts") as? [String: String] ?? [:]
+        let preferred = isDemo ? [:] : UserDefaults.standard.dictionary(forKey: "preferredFillAccounts") as? [String: String] ?? [:]
         let credential = matches.count == 1 ? matches.first : matches.first { preferred[$0.scope] == $0.id }
         guard let credential, !credential.username.isEmpty else { return }
         guard automaticFillInFlight.insert(tab.id).inserted else { return }
@@ -481,7 +502,6 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     func fillCredential(_ credential: WebCredential) {
-        guard !isDemo else { return }
         cancelCredentialFill()
         guard let tab = selectedTab else { return }
         do {
@@ -505,7 +525,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
                 guard self.fillRequestID == requestID, self.selectedTab === tab,
                       tab.navigationRevision == revision, tab.webView != nil else { return }
                 if ok {
-                    if !self.isPrivate {
+                    if !self.isPrivate && !self.isDemo {
                         var preferred = UserDefaults.standard.dictionary(forKey: "preferredFillAccounts") as? [String: String] ?? [:]
                         preferred[credential.scope] = credential.id
                         UserDefaults.standard.set(preferred, forKey: "preferredFillAccounts")
@@ -616,7 +636,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
                 group.notify(queue: .main) {
                     dataStore.removeData(ofTypes: dataTypes, for: matches) {
                         Task { @MainActor in
-                            if !targetTab.isPrivate { SessionCookieVault.shared.flush {} }
+                            if !targetTab.isPrivate && targetTab.windowState?.isDemo != true { SessionCookieVault.shared.flush {} }
                             targetTab.reload()
                         }
                     }
@@ -837,6 +857,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         cancelCredentialFill()
         persistSession(immediately: true)
         tabs.forEach { $0.tearDown() }
+        Self.activeDownloads.removeValue(forKey: windowSessionID)
         Self.claimedWindowSessionIDs.remove(windowSessionID)
     }
 
@@ -848,7 +869,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     private func persistSession(immediately: Bool = false) {
-        guard !isPrivate else { return }
+        guard !isPrivate, !isDemo else { return }
         persistWorkItem?.cancel()
         if immediately {
             saveSessionSnapshot()
@@ -870,7 +891,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     private func saveSessionSnapshot() {
-        guard !isPrivate else { return }
+        guard !isPrivate, !isDemo else { return }
         let snapshot = BrowserSessionSnapshot(
             tabs: tabs.map {
                 BrowserSessionSnapshot.TabSnapshot(

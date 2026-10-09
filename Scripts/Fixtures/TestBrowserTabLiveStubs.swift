@@ -75,6 +75,8 @@ final class DownloadStore: NSObject, WKDownloadDelegate {
 
 @MainActor
 final class BrowserWindowState: NSObject {
+    let permissions = SitePermissionStore.shared
+    let isDemo = false
     let history = HistoryStore()
     let downloads = DownloadStore()
     var finishedNavigations = 0

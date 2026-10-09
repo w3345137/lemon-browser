@@ -273,7 +273,12 @@ final class LemonAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isSavingBeforeQuit else { return .terminateLater }
         isSavingBeforeQuit = true
-        DownloadStore.shared.prepareToQuit {
+        BrowserWindowState.prepareDownloadsForQuit {
+            guard BrowserWindowState.hasUsedPersistentProfile else {
+                self.isSavingBeforeQuit = false
+                sender.reply(toApplicationShouldTerminate: true)
+                return
+            }
             SessionCookieVault.shared.flush {
                 self.isSavingBeforeQuit = false
                 if let message = SessionCookieVault.shared.storageError {

@@ -55,8 +55,11 @@ final class SitePermissionStore: ObservableObject {
 
     @Published private var values: [String: SitePermissionChoice] = [:]
     private let defaultsKey = "sitePermissions.v1"
+    private let inMemory: Bool
 
-    private init() {
+    init(inMemory: Bool = false) {
+        self.inMemory = inMemory
+        guard !inMemory else { return }
         guard let data = UserDefaults.standard.data(forKey: defaultsKey),
               let decoded = try? JSONDecoder().decode([String: SitePermissionChoice].self, from: data)
         else { return }
@@ -134,6 +137,7 @@ final class SitePermissionStore: ObservableObject {
     }
 
     private func persist() {
+        guard !inMemory else { return }
         guard let data = try? JSONEncoder().encode(values) else { return }
         UserDefaults.standard.set(data, forKey: defaultsKey)
     }

@@ -907,7 +907,7 @@ extension BrowserTab: WKUIDelegate {
         }
 
         let host = webView.url?.host ?? navigationAction.request.url?.host ?? ""
-        let store = SitePermissionStore.shared
+        let store = windowState?.permissions ?? SitePermissionStore.shared
         let choice = store.choice(for: host, kind: .popups)
         if choice == .ask, !host.isEmpty {
             let revision = navigationRevision
@@ -937,7 +937,7 @@ extension BrowserTab: WKUIDelegate {
         decisionHandler: @escaping (WKPermissionDecision) -> Void
     ) {
         let host = origin.host
-        let store = SitePermissionStore.shared
+        let store = windowState?.permissions ?? SitePermissionStore.shared
         let choice: SitePermissionChoice
         switch type {
         case .camera:
@@ -1356,7 +1356,7 @@ private extension BrowserTab {
             ?? webView.url?.host
             ?? self.url?.host
             ?? "当前网站"
-        let store = SitePermissionStore.shared
+        let store = windowState?.permissions ?? SitePermissionStore.shared
         let choice = store.externalApplicationChoice(for: sourceHost, scheme: scheme)
 
         guard let applicationURL = NSWorkspace.shared.urlForApplication(toOpen: url) else {

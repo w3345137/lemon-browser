@@ -5,10 +5,15 @@ import WebKit
 final class WebsiteDataManager: ObservableObject {
     @Published private(set) var records: [WKWebsiteDataRecord] = []
     @Published private(set) var isLoading = false
+    private let dataStore: WKWebsiteDataStore
+
+    init(dataStore: WKWebsiteDataStore? = nil) {
+        self.dataStore = dataStore ?? .default()
+    }
 
     func refresh() {
         isLoading = true
-        WKWebsiteDataStore.default().fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) { [weak self] records in
+        dataStore.fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) { [weak self] records in
             Task { @MainActor in
                 self?.records = records.sorted {
                     $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
@@ -19,7 +24,7 @@ final class WebsiteDataManager: ObservableObject {
     }
 
     func remove(record: WKWebsiteDataRecord, completion: @escaping () -> Void = {}) {
-        WKWebsiteDataStore.default().removeData(
+        dataStore.removeData(
             ofTypes: record.dataTypes,
             for: [record]
         ) { [weak self] in
@@ -31,7 +36,7 @@ final class WebsiteDataManager: ObservableObject {
     }
 
     func removeAll(completion: @escaping () -> Void = {}) {
-        WKWebsiteDataStore.default().removeData(
+        dataStore.removeData(
             ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
             modifiedSince: .distantPast
         ) { [weak self] in
@@ -44,12 +49,18 @@ final class WebsiteDataManager: ObservableObject {
 }
 
 struct WebsiteDataSettingsView: View {
-    @StateObject private var dataManager = WebsiteDataManager()
-    @ObservedObject private var permissions = SitePermissionStore.shared
+    @StateObject private var dataManager: WebsiteDataManager
+    @ObservedObject private var permissions: SitePermissionStore
     @State private var query = ""
     @State private var selectedHost: String?
     @State private var confirmHostRemoval: String?
     @State private var confirmingRemoveAll = false
+
+    @MainActor
+    init(dataStore: WKWebsiteDataStore? = nil, permissions: SitePermissionStore? = nil) {
+        _dataManager = StateObject(wrappedValue: WebsiteDataManager(dataStore: dataStore))
+        _permissions = ObservedObject(wrappedValue: permissions ?? .shared)
+    }
 
     private var hosts: [String] {
         let webKitHosts = dataManager.records.map(\.displayName)

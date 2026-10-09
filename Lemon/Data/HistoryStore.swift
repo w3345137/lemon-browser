@@ -21,11 +21,16 @@ final class HistoryStore: ObservableObject {
 
     private let url: URL
     private let isPrivate: Bool
+    private let inMemory: Bool
 
-    init(isPrivate: Bool, storageURL: URL? = nil) {
+    init(isPrivate: Bool, storageURL: URL? = nil, inMemory: Bool = false) {
         self.isPrivate = isPrivate
+        self.inMemory = inMemory
         if let storageURL {
             url = storageURL
+        } else if inMemory {
+            // 内存资料只需要占位 URL，不创建个人 Application Support 目录。
+            url = FileManager.default.temporaryDirectory.appendingPathComponent("lemon-unused-history-\(UUID()).json")
         } else {
             let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("Lemon", isDirectory: true)
@@ -33,7 +38,7 @@ final class HistoryStore: ObservableObject {
             url = folder.appendingPathComponent("history.json")
         }
 
-        if !isPrivate, let data = try? Data(contentsOf: url),
+        if !isPrivate, !inMemory, let data = try? Data(contentsOf: url),
            let decoded = try? JSONDecoder().decode([HistoryEntry].self, from: data) {
             entries = decoded
         }
@@ -102,7 +107,7 @@ final class HistoryStore: ObservableObject {
     }
 
     private func persist() {
-        guard !isPrivate else { return }
+        guard !isPrivate, !inMemory else { return }
         if let data = try? JSONEncoder().encode(entries) {
             try? data.write(to: url, options: .atomic)
         }

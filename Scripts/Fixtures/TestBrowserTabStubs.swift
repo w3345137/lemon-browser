@@ -94,6 +94,8 @@ final class DownloadStore: NSObject, WKDownloadDelegate {
 
 @MainActor
 final class BrowserWindowState: NSObject {
+    let permissions = SitePermissionStore.shared
+    let isDemo = false
     let history = HistoryStore()
     let downloads = DownloadStore()
     /// 记录保存密码提示，供测试断言延迟确认行为。

@@ -5,8 +5,11 @@ import SwiftUI
 struct TabStripView: NSViewRepresentable {
     @ObservedObject var state: BrowserWindowState
     let layoutWidth: CGFloat
+    @ObservedObject var preferences: TabInteractionPreferences = .shared
 
-    func makeCoordinator() -> Coordinator { Coordinator(state: state, layoutWidth: layoutWidth) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(state: state, layoutWidth: layoutWidth, preferences: preferences)
+    }
 
     func makeNSView(context: Context) -> NSScrollView {
         let layout = NSCollectionViewFlowLayout()
@@ -37,6 +40,15 @@ struct TabStripView: NSViewRepresentable {
         collectionView.onSelectTab = { [weak coordinator = context.coordinator] index in
             guard let coordinator, index < coordinator.tabs.count else { return }
             coordinator.state.select(coordinator.tabs[index].id)
+        }
+        collectionView.tabIDAtIndex = { [weak coordinator = context.coordinator] index in
+            guard let coordinator, coordinator.tabs.indices.contains(index) else { return nil }
+            return coordinator.tabs[index].id
+        }
+        collectionView.onCloseTab = { [weak coordinator = context.coordinator] index in
+            guard let coordinator, coordinator.tabs.indices.contains(index) else { return }
+            coordinator.state.closeTab(coordinator.tabs[index].id)
+            coordinator.reloadTabs(coordinator.state.tabs)
         }
         collectionView.onInteractionEnded = { [weak coordinator = context.coordinator] in
             guard let state = coordinator?.state else { return }
@@ -82,6 +94,7 @@ struct TabStripView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.horizontalScroller = nil
         context.coordinator.state = state
+        context.coordinator.preferences = preferences
         context.coordinator.layoutWidth = layoutWidth
         context.coordinator.reloadTabs(state.tabs)
     }
@@ -90,18 +103,22 @@ struct TabStripView: NSViewRepresentable {
     final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegateFlowLayout {
         var state: BrowserWindowState
         var layoutWidth: CGFloat
+        var preferences: TabInteractionPreferences
         fileprivate weak var collectionView: TabCollectionView?
         fileprivate var tabs: [BrowserTab] = []
         private var subscriptions: [BrowserTab.ID: AnyCancellable] = [:]
         private var contextTab: BrowserTab?
         private var draggingTabID: BrowserTab.ID?
 
-        init(state: BrowserWindowState, layoutWidth: CGFloat) {
+        init(state: BrowserWindowState, layoutWidth: CGFloat, preferences: TabInteractionPreferences) {
             self.state = state
             self.layoutWidth = layoutWidth
+            self.preferences = preferences
         }
 
         func reloadTabs(_ newTabs: [BrowserTab]) {
+            collectionView?.closeOnDoubleClick = preferences.closeOnDoubleClick
+            collectionView?.closeOnRightClick = preferences.closeOnRightClick
             guard collectionView?.trackingTabDrag != true else { return }
             let oldIDs = tabs.map(\.id)
             let newIDs = newTabs.map(\.id)
@@ -258,6 +275,7 @@ struct TabStripView: NSViewRepresentable {
                 selected: tab.id == state.selectedTabID,
                 dragging: tab.id == draggingTabID,
                 separator: indexPath.item + 1 < tabs.count && tabs[indexPath.item + 1].id != state.selectedTabID,
+                showsMoreButton: preferences.closeOnRightClick,
                 onClose: { [weak self, weak tab] in
                     guard let self, let tab else { return }
                     self.state.closeTab(tab.id)
@@ -265,6 +283,11 @@ struct TabStripView: NSViewRepresentable {
                 },
                 onToggleMute: { [weak tab] in
                     tab?.toggleAudioMute()
+                },
+                contextMenu: { [weak self, weak tab] in
+                    guard let self, let tab,
+                          let index = self.tabs.firstIndex(where: { $0.id == tab.id }) else { return nil }
+                    return self.contextMenu(for: IndexPath(item: index, section: 0))
                 }
             )
         }
@@ -283,7 +306,7 @@ struct TabStripView: NSViewRepresentable {
                 layoutWidth - CGFloat(pinnedCount) * SafariChrome.pinnedTabWidth - spacing - 1
             )
             // Chromium 会随标签数量增加逐步压缩宽度；保留足够的图标、标题和关闭按钮空间。
-            let adaptiveMinimum: CGFloat = 76
+            let adaptiveMinimum: CGFloat = preferences.closeOnRightClick ? 104 : 76
             return min(SafariChrome.tabMaxWidth, max(adaptiveMinimum, available / CGFloat(regularCount)))
         }
 
@@ -423,8 +446,13 @@ private final class TabStripScrollView: NSScrollView {
     }
 }
 
-fileprivate final class TabCollectionView: NSCollectionView {
+final class TabCollectionView: NSCollectionView {
     var onSelectTab: ((Int) -> Void)?
+    var onCloseTab: ((Int) -> Void)?
+    var tabIDAtIndex: ((Int) -> UUID?)?
+    var closeOnDoubleClick = false
+    var closeOnRightClick = false
+    private var lastPrimaryClickID: UUID?
     var dragRange: ((Int) -> Range<Int>)?
     var onReorder: ((Int, Int) -> Void)?
     private(set) var trackingTabDrag = false
@@ -433,12 +461,27 @@ fileprivate final class TabCollectionView: NSCollectionView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            lastPrimaryClickID = nil
+            if closeOnRightClick { closeTab(at: event); return }
+            super.mouseDown(with: event)
+            return
+        }
         let down = convert(event.locationInWindow, from: nil)
         guard let path = indexPathForItem(at: down), let window,
               let dragged = item(at: path)?.view else {
             super.mouseDown(with: event)
+            lastPrimaryClickID = nil
             return
         }
+        let clickedID = tabIDAtIndex?(path.item)
+        if closeOnDoubleClick, event.clickCount == 2, let clickedID,
+           clickedID == lastPrimaryClickID {
+            lastPrimaryClickID = nil
+            onCloseTab?(path.item)
+            return
+        }
+        lastPrimaryClickID = nil
         onSelectTab?(path.item)
         // Run after AppKit's mouse tracking, including a canceled drag. Indexes
         // may have changed during reordering, so restore the selected tab by ID.
@@ -454,6 +497,7 @@ fileprivate final class TabCollectionView: NSCollectionView {
         let offset = down.x - original.minX
         var destination = path.item
         var started = false
+        var movedBeyondClick = false
         var canceled = false
         trackingTabDrag = true
         defer {
@@ -469,6 +513,7 @@ fileprivate final class TabCollectionView: NSCollectionView {
             }
             if next.type == .leftMouseUp { break }
             let point = convert(next.locationInWindow, from: nil)
+            if abs(point.x - down.x) >= 5 || abs(point.y - down.y) >= 5 { movedBeyondClick = true }
             if !started {
                 guard abs(point.x - down.x) >= 5 else { continue }
                 started = true
@@ -507,6 +552,23 @@ fileprivate final class TabCollectionView: NSCollectionView {
         }
         trackingTabDrag = false
         if started && !canceled { onReorder?(path.item, destination) }
+        // 双击的两次点击必须命中同一个标签，中间不能发生拖动。
+        if !movedBeyondClick && !canceled { lastPrimaryClickID = clickedID }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        lastPrimaryClickID = nil
+        if closeOnRightClick {
+            closeTab(at: event)
+        } else {
+            super.rightMouseDown(with: event)
+        }
+    }
+
+    private func closeTab(at event: NSEvent) {
+        lastPrimaryClickID = nil
+        guard let path = indexPathForItem(at: convert(event.locationInWindow, from: nil)) else { return }
+        onCloseTab?(path.item)
     }
 
     var contextMenuProvider: ((IndexPath) -> NSMenu?)?
@@ -529,6 +591,8 @@ fileprivate final class TabCollectionView: NSCollectionView {
     required init?(coder: NSCoder) { super.init(coder: coder) }
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        // 查询菜单本身无副作用；关闭只在鼠标事件入口执行一次。
+        guard !closeOnRightClick else { return nil }
         let point = convert(event.locationInWindow, from: nil)
         guard let path = indexPathForItem(at: point) else { return nil }
         return contextMenuProvider?(path)
@@ -558,11 +622,12 @@ fileprivate final class TabCollectionView: NSCollectionView {
     func hideInsertion() { insertionView.isHidden = true }
 }
 
-private final class NativeTabCollectionItem: NSCollectionViewItem {
+final class NativeTabCollectionItem: NSCollectionViewItem {
     static let identifier = NSUserInterfaceItemIdentifier("NativeTabCollectionItem")
     private let iconView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let closeButton = TabCloseButton()
+    private let moreButton = TabCloseButton()
     private let audioButton = NSButton()
     private let loadingIndicator = NSProgressIndicator()
     private var hovering = false
@@ -572,6 +637,9 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
     private var privateState = false
     private var playingAudio = false
     private var mutedAudio = false
+    private var loadingState = false
+    private var showsMoreButton = false
+    private var contextMenuProvider: (() -> NSMenu?)?
     private var onClose: (() -> Void)?
     private var onToggleMute: (() -> Void)?
 
@@ -596,6 +664,16 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
         closeButton.action = #selector(closeTab)
         closeButton.wantsLayer = true
         closeButton.layer?.cornerRadius = 8
+        moreButton.isBordered = false
+        moreButton.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "标签页更多操作")
+        moreButton.imageScaling = .scaleProportionallyDown
+        moreButton.contentTintColor = .secondaryLabelColor
+        moreButton.toolTip = "标签页更多操作"
+        moreButton.setAccessibilityLabel("标签页更多操作")
+        moreButton.target = self
+        moreButton.action = #selector(showMoreMenu)
+        moreButton.wantsLayer = true
+        moreButton.layer?.cornerRadius = 8
         audioButton.isBordered = false
         audioButton.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: "正在播放音频，点击静音")
         audioButton.imageScaling = .scaleProportionallyDown
@@ -613,18 +691,21 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
         view.addSubview(titleField)
         view.addSubview(audioButton)
         view.addSubview(closeButton)
+        view.addSubview(moreButton)
     }
 
     override func viewDidLayout() {
         super.viewDidLayout()
         iconView.frame = NSRect(x: pinnedState ? (view.bounds.width - 14) / 2 : 14, y: 11, width: 14, height: 14)
         loadingIndicator.frame = iconView.frame
-        closeButton.frame = NSRect(x: view.bounds.width - 28, y: 10, width: 16, height: 16)
-        audioButton.frame = NSRect(x: view.bounds.width - 47, y: 10, width: 16, height: 16)
+        closeButton.frame = NSRect(x: view.bounds.width - (showsMoreButton ? 47 : 28), y: 10, width: 16, height: 16)
+        moreButton.frame = NSRect(x: pinnedState ? (view.bounds.width - 16) / 2 : view.bounds.width - 28,
+                                  y: 10, width: 16, height: 16)
+        audioButton.frame = NSRect(x: view.bounds.width - (showsMoreButton ? 66 : 47), y: 10, width: 16, height: 16)
         titleField.frame = NSRect(
             x: 34,
             y: 9,
-            width: max(0, view.bounds.width - (showsAudioIndicator ? 88 : 68)),
+            width: max(0, view.bounds.width - (showsAudioIndicator ? 88 : 68) - (showsMoreButton ? 19 : 0)),
             height: 18
         )
     }
@@ -634,7 +715,9 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
         playingAudio || mutedAudio
     }
 
-    func configure(tab: BrowserTab, selected: Bool, dragging: Bool, separator: Bool, onClose: @escaping () -> Void, onToggleMute: @escaping () -> Void) {
+    func configure(tab: BrowserTab, selected: Bool, dragging: Bool, separator: Bool,
+                   showsMoreButton: Bool, onClose: @escaping () -> Void,
+                   onToggleMute: @escaping () -> Void, contextMenu: @escaping () -> NSMenu?) {
         // A reused/moved cell may never receive mouseExited for its old frame.
         (view as? TabCellView)?.synchronizeHover()
         (view as? TabCellView)?.pinned = tab.isPinned
@@ -645,6 +728,9 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
         privateState = tab.isPrivate && tab.windowState?.isDemo != true
         playingAudio = tab.mediaState == .playing
         mutedAudio = tab.isAudioMuted
+        loadingState = tab.isLoading
+        self.showsMoreButton = showsMoreButton
+        contextMenuProvider = contextMenu
         self.onClose = onClose
         self.onToggleMute = onToggleMute
         titleField.stringValue = tab.title
@@ -727,6 +813,11 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
             }
             self.titleField.textColor = self.selectedState ? .labelColor : NSColor.labelColor.withAlphaComponent(0.72)
             self.closeButton.isHidden = self.pinnedState || (!self.selectedState && !self.hovering)
+            self.moreButton.isHidden = !self.showsMoreButton || !self.hovering || self.draggingState
+            // 固定标签不加宽，悬浮时临时用更多按钮替换中央图标。
+            let replacesPinnedIcon = self.pinnedState && !self.moreButton.isHidden
+            self.iconView.isHidden = self.loadingState || replacesPinnedIcon
+            self.loadingIndicator.isHidden = !self.loadingState || replacesPinnedIcon
             self.audioButton.isHidden = self.pinnedState || !self.showsAudioIndicator
             if self.privateState && self.selectedState {
                 self.view.layer?.borderColor = NSColor.systemPurple.withAlphaComponent(0.28).cgColor
@@ -745,6 +836,12 @@ private final class NativeTabCollectionItem: NSCollectionViewItem {
 
     @objc private func closeTab() { onClose?() }
     @objc private func toggleMute() { onToggleMute?() }
+    func makeContextMenu() -> NSMenu? { contextMenuProvider?() }
+    @objc private func showMoreMenu() {
+        guard showsMoreButton, let menu = makeContextMenu() else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: moreButton)
+        (view as? TabCellView)?.synchronizeHover()
+    }
 }
 
 private final class TabCloseButton: NSButton {
@@ -767,7 +864,7 @@ private final class TabCloseButton: NSButton {
     override func mouseExited(with event: NSEvent) { updateHover(false) }
 }
 
-private final class TabCellView: NSView {
+final class TabCellView: NSView {
     var pinned = false { didSet { needsDisplay = true } }
     var showsSeparator = false { didSet { needsDisplay = true } }
     var attached = false { didSet { needsDisplay = true } }

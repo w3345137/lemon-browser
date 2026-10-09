@@ -20,7 +20,7 @@ private struct AddressBarContent: View {
     @Environment(\.openSettings) private var openSettings
     @ObservedObject var state: BrowserWindowState
     @ObservedObject private var bookmarks: BookmarkStore
-    @ObservedObject private var credentialStore = CredentialStore.shared
+    @ObservedObject private var credentialStore: CredentialStore
     @ObservedObject private var downloads: DownloadStore
     var addressFocused: FocusState<Bool>.Binding
     @State private var showingHistory = false
@@ -33,6 +33,7 @@ private struct AddressBarContent: View {
         self.tab = tab
         self.addressFocused = addressFocused
         _bookmarks = ObservedObject(wrappedValue: state.bookmarks)
+        _credentialStore = ObservedObject(wrappedValue: state.credentials)
         _downloads = ObservedObject(wrappedValue: state.downloads)
     }
 
@@ -49,8 +50,9 @@ private struct AddressBarContent: View {
             pill
                 .frame(maxWidth: .infinity)
 
-            if !state.isDemo {
+            Group {
                 utilityButton("gearshape", help: "设置") {
+                    SettingsNavigation.shared.windowState = state
                     openSettings()
                 }
             }
@@ -83,8 +85,9 @@ private struct AddressBarContent: View {
                 Divider()
                 Button("历史记录") { state.showHistory() }
                 Button("下载") { state.showDownloads() }
-                if !state.isDemo {
+                Group {
                     Button("书签管理器") {
+                        SettingsNavigation.shared.windowState = state
                         SettingsNavigation.shared.selection = .bookmarks
                         openSettings()
                     }
@@ -98,8 +101,8 @@ private struct AddressBarContent: View {
                     NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Safari.app"))
                 }
                     .disabled(tab.webView == nil)
-                if !state.isDemo {
-                    Button("设置…") { openSettings() }
+                Group {
+                    Button("设置…") { SettingsNavigation.shared.windowState = state; openSettings() }
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -191,7 +194,7 @@ private struct AddressBarContent: View {
             }
 
             if let tab = state.selectedTab, tab.hasLoadedPage, !state.isAddressEditing {
-                let siteCredentials = state.isDemo ? [] : credentialStore.credentials(for: tab.url)
+                let siteCredentials = credentialStore.credentials(for: tab.url)
                 if !siteCredentials.isEmpty {
                     Menu {
                         ForEach(siteCredentials) { credential in
@@ -506,12 +509,18 @@ private enum SiteSecurityBadge {
 private struct SiteInformationPanel: View {
     @ObservedObject var state: BrowserWindowState
     @ObservedObject var tab: BrowserTab
-    @ObservedObject private var permissions = SitePermissionStore.shared
+    @ObservedObject private var permissions: SitePermissionStore
     @ObservedObject private var sessions = SessionCookieVault.shared
     @Environment(\.openSettings) private var openSettings
     @State private var cookieCount: Int?
     @State private var permissionChanged = false
     @State private var showCertificates = false
+
+    init(state: BrowserWindowState, tab: BrowserTab) {
+        self.state = state
+        self.tab = tab
+        _permissions = ObservedObject(wrappedValue: state.permissions)
+    }
 
     private var certificateNames: [String] {
         guard let trust = tab.webView?.serverTrust,
@@ -557,7 +566,7 @@ private struct SiteInformationPanel: View {
                 }
                 Text(cookieCount.map { "此网站可用的 Cookie：\($0) 个" } ?? "正在读取网站数据…")
                     .foregroundStyle(.secondary)
-                if !tab.isPrivate {
+                if state.websiteDataStore.isPersistent {
                     if let error = sessions.storageError {
                         Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                         Button("重试保存登录状态") { sessions.retrySaving() }
@@ -566,14 +575,14 @@ private struct SiteInformationPanel: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("无痕窗口关闭后不保留登录状态").foregroundStyle(.secondary)
+                    Text(state.isDemo ? "空白资料窗口关闭后不保留登录状态" : "无痕窗口关闭后不保留登录状态").foregroundStyle(.secondary)
                 }
             }
             .font(.system(size: 11.5))
             .padding(14)
             Divider()
 
-            if !state.isDemo {
+            Group {
                 VStack(spacing: 2) {
                     ForEach(SitePermissionKind.allCases) { kind in
                     HStack(spacing: 10) {
@@ -626,7 +635,7 @@ private struct SiteInformationPanel: View {
                 Text("摄像头或麦克风被 macOS 禁止。需在系统设置 → 隐私与安全性中允许 Lemon。")
                     .font(.system(size: 11)).foregroundStyle(.orange).padding(.horizontal, 14)
             }
-            if permissionChanged && !state.isDemo {
+            if permissionChanged {
                 HStack {
                     Text("重新载入后应用权限更改").foregroundStyle(.secondary)
                     Spacer()
@@ -637,7 +646,7 @@ private struct SiteInformationPanel: View {
 
             Divider()
 
-            if !state.isDemo {
+            Group {
                 HStack {
                     Button("重置权限") {
                         permissions.reset(host: host)
@@ -656,8 +665,9 @@ private struct SiteInformationPanel: View {
                 .font(.system(size: 12))
                 .padding(12)
             }
-            if !state.isDemo {
+            Group {
                 Button("所有网站数据与权限…") {
+                    SettingsNavigation.shared.windowState = state
                     SettingsNavigation.shared.selection = .websites
                     openSettings()
                 }

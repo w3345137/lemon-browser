@@ -46,8 +46,11 @@ final class CredentialStore: ObservableObject {
     static let legacyService = "com.workbuddy.lumen.web-password.v2"
 
     @Published private(set) var credentials: [WebCredential] = []
+    let inMemory: Bool
+    private var temporaryPasswords: [String: String] = [:]
 
-    private init() {
+    init(inMemory: Bool = false) {
+        self.inMemory = inMemory
         refresh()
     }
 
@@ -66,6 +69,12 @@ final class CredentialStore: ObservableObject {
     ) throws {
         guard let scope = Self.normalizedScope(rawScope), !password.isEmpty else {
             throw CredentialStoreError.invalidScope
+        }
+
+        if inMemory {
+            temporaryPasswords[Self.accountKey(scope: scope, username: username)] = password
+            if refreshesCredentials { refresh() }
+            return
         }
 
         let account = Self.accountKey(scope: scope, username: username)
@@ -96,6 +105,12 @@ final class CredentialStore: ObservableObject {
     }
 
     func password(for credential: WebCredential) throws -> String {
+        if inMemory {
+            guard let password = temporaryPasswords[credential.id] else {
+                throw CredentialStoreError.keychain(errSecItemNotFound)
+            }
+            return password
+        }
         if let password = try password(for: credential, service: Self.service) {
             return password
         }
@@ -134,7 +149,12 @@ final class CredentialStore: ObservableObject {
     }
 
     func saveDecision(scope: String, username: String, password: String) -> CredentialSaveDecision {
-        Self.saveDecision(scope: scope, username: username, password: password) { credential in
+        if inMemory {
+            return Self.saveDecision(scope: scope, username: username, password: password) {
+                self.temporaryPasswords[$0.id]
+            }
+        }
+        return Self.saveDecision(scope: scope, username: username, password: password) { credential in
             if let stored = try self.password(for: credential, service: Self.service, allowsAuthentication: false) {
                 return stored
             }
@@ -161,6 +181,11 @@ final class CredentialStore: ObservableObject {
     }
 
     func delete(_ credential: WebCredential) throws {
+        if inMemory {
+            temporaryPasswords.removeValue(forKey: credential.id)
+            refresh()
+            return
+        }
         for service in [Self.service, Self.legacyService] {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
@@ -176,6 +201,10 @@ final class CredentialStore: ObservableObject {
     }
 
     func refresh() {
+        if inMemory {
+            credentials = temporaryPasswords.keys.compactMap(Self.parseAccountKey).sorted { $0.id < $1.id }
+            return
+        }
         var found: [String: WebCredential] = [:]
         for service in [Self.service, Self.legacyService] {
             let query: [String: Any] = [

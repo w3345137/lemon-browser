@@ -60,7 +60,7 @@ struct BrowserWindowView: View {
         .background(WindowChrome(
             isPrivate: state.isPrivate && !state.isDemo,
             onWindowKey: {
-                DemoWindowContext.shared.isDemoActive = state.isDemo
+                SettingsNavigation.shared.windowState = state
                 // 系统外链应交给当前聚焦的窗口；多窗口时后开的窗口不再抢走接收权。
                 guard !state.isPrivate else { return }
                 incomingURLToken = IncomingBrowserURL.attach { url in
@@ -68,7 +68,7 @@ struct BrowserWindowView: View {
                 }
             },
             onWindowClose: {
-                if state.isDemo { DemoWindowContext.shared.isDemoActive = false }
+                // 设置仍打开时保留其资料上下文，不能在关窗后回退显示个人资料。
                 if let incomingURLToken {
                     IncomingBrowserURL.detach(incomingURLToken)
                 }

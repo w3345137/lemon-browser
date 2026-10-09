@@ -3,13 +3,15 @@ import CoreServices
 import SwiftUI
 import UniformTypeIdentifiers
 
+#if !LEMON_PROFILE_TEST
 @main
+#endif
 struct LemonApp: App {
     @NSApplicationDelegateAdaptor(LemonAppDelegate.self) private var appDelegate
     private let launchesInDemo = ProcessInfo.processInfo.arguments.contains("--demo")
 
     init() {
-        LemonIdentityMigration.runIfNeeded()
+        if !launchesInDemo { LemonIdentityMigration.runIfNeeded() }
         ContentBlocker.shared.prepare()
     }
 
@@ -25,7 +27,7 @@ struct LemonApp: App {
         }
 
         WindowGroup("无痕浏览", id: "private") {
-            BrowserWindowView(isPrivate: true)
+            BrowserWindowView(isPrivate: true, isDemo: launchesInDemo)
                 .frame(minWidth: 860, minHeight: 560)
         }
         .defaultSize(width: 1180, height: 780)
@@ -41,6 +43,13 @@ struct LemonApp: App {
         Settings {
             SettingsView()
         }
+
+        WindowGroup("空白资料无痕窗口", id: "clean-private") {
+            BrowserWindowView(isPrivate: true, isDemo: true)
+                .frame(minWidth: 860, minHeight: 560)
+        }
+        .defaultSize(width: 1180, height: 780)
+        .windowStyle(.hiddenTitleBar)
     }
 }
 
@@ -57,10 +66,9 @@ struct BrowserCommands: Commands {
             .keyboardShortcut("n", modifiers: .command)
 
             Button("新建无痕窗口") {
-                openWindow(id: "private")
+                openWindow(id: state?.isDemo == true ? "clean-private" : "private")
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
-            .disabled(state?.isDemo == true)
 
             Button("新建干净演示窗口") {
                 openWindow(id: "demo")
@@ -89,6 +97,14 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut("w", modifiers: .command)
 
+        }
+
+        CommandGroup(replacing: .appSettings) {
+            Button("设置…") {
+                if let state { SettingsNavigation.shared.windowState = state }
+                openSettings()
+            }
+            .keyboardShortcut(",", modifiers: .command)
         }
 
         CommandGroup(after: .windowList) {
@@ -152,11 +168,11 @@ struct BrowserCommands: Commands {
             .keyboardShortcut("d", modifiers: .command)
             Divider()
             Button("书签管理器") {
+                if let state { SettingsNavigation.shared.windowState = state }
                 SettingsNavigation.shared.selection = .bookmarks
                 openSettings()
             }
             .keyboardShortcut("b", modifiers: [.command, .option])
-            .disabled(state?.isDemo == true)
         }
 
         CommandMenu("工具") {
@@ -167,7 +183,6 @@ struct BrowserCommands: Commands {
                     NSWorkspace.shared.open(folder)
                 }
             }
-            .disabled(state?.isDemo == true)
             Divider()
             // 检查器走公开 API：网页 isInspectable = true，
             // 在 Safari“开发”菜单中检查；不使用 WebKit 私有 SPI。
@@ -185,7 +200,6 @@ struct BrowserCommands: Commands {
                 state?.isBookmarkBarVisible.toggle()
             }
             .keyboardShortcut("b", modifiers: [.command, .shift])
-            .disabled(state?.isDemo == true)
 
             Button("显示/隐藏边栏") {
                 state?.isSidebarVisible.toggle()
@@ -250,14 +264,9 @@ final class SettingsNavigation: ObservableObject {
     static let shared = SettingsNavigation()
 
     @Published var selection: SettingsSection = .general
+    /// 设置成为 key window 后仍使用发起操作的窗口资料。
+    @Published var windowState: BrowserWindowState?
 
-    private init() {}
-}
-
-@MainActor
-final class DemoWindowContext: ObservableObject {
-    static let shared = DemoWindowContext()
-    @Published var isDemoActive = false
     private init() {}
 }
 
@@ -265,24 +274,10 @@ struct SettingsView: View {
     @StateObject private var defaultBrowser = DefaultBrowserManager()
     @ObservedObject private var contentBlocker = ContentBlocker.shared
     @ObservedObject private var navigation = SettingsNavigation.shared
-    @ObservedObject private var demoContext = DemoWindowContext.shared
+    @ObservedObject private var tabInteraction = TabInteractionPreferences.shared
 
     var body: some View {
-        Group {
-            if demoContext.isDemoActive || ProcessInfo.processInfo.arguments.contains("--demo") {
-                VStack(spacing: 12) {
-                    Image(systemName: "rectangle.on.rectangle")
-                        .font(.system(size: 34))
-                    Text("演示窗口")
-                        .font(.title2.weight(.semibold))
-                    Text("演示窗口不显示个人设置、书签、密码或网站数据。")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(width: 920, height: 640)
-            } else {
-                regularSettings
-            }
-        }
+        regularSettings
     }
 
     private var regularSettings: some View {
@@ -312,6 +307,7 @@ struct SettingsView: View {
             .background(Color(nsColor: .windowBackgroundColor))
 
             settingsDetail
+                .id(navigation.windowState?.windowSessionID ?? "personal")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: 920, height: 640)
@@ -325,11 +321,14 @@ struct SettingsView: View {
         case .general:
             generalSettings
         case .bookmarks:
-            BookmarkManagerView()
+            BookmarkManagerView(store: navigation.windowState?.bookmarks ?? .shared,
+                                windowState: navigation.windowState)
         case .passwords:
-            PasswordSettingsView()
+            PasswordSettingsView(store: navigation.windowState?.credentials ?? .shared,
+                                 windowState: navigation.windowState)
         case .websites:
-            WebsiteDataSettingsView()
+            WebsiteDataSettingsView(dataStore: navigation.windowState?.websiteDataStore ?? .default(),
+                                    permissions: navigation.windowState?.permissions ?? .shared)
         }
     }
 
@@ -371,6 +370,13 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(defaultBrowser.hasError ? Color.red : Color.secondary)
                     }
+                }
+                Section("标签页") {
+                    Toggle("双击关闭标签页", isOn: $tabInteraction.closeOnDoubleClick)
+                    Toggle("右键关闭标签页", isOn: $tabInteraction.closeOnRightClick)
+                    Text("开启右键关闭后，标签页菜单移至鼠标悬浮时显示的“…”更多按钮；固定标签页的更多按钮显示在图标位置。Control + 点击也按右键处理。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section("隐私") {
                     Toggle("拦截广告和跟踪器", isOn: Binding(
@@ -555,13 +561,21 @@ private final class DefaultBrowserManager: ObservableObject {
 }
 
 private struct PasswordSettingsView: View {
-    @ObservedObject private var store = CredentialStore.shared
+    @ObservedObject private var store: CredentialStore
     #if !APP_STORE
-    @ObservedObject private var sessionImporter = SessionImportServer.shared
+    @StateObject private var sessionImporter: SessionImportServer
     #endif
     @State private var searchText = ""
     @State private var errorText: String?
     @State private var importStatus = ""
+
+    init(store: CredentialStore, windowState: BrowserWindowState?) {
+        _store = ObservedObject(wrappedValue: store)
+        #if !APP_STORE
+        _sessionImporter = StateObject(wrappedValue: SessionImportServer(
+            credentials: store, dataStore: windowState?.websiteDataStore ?? .default()))
+        #endif
+    }
 
     private var filteredCredentials: [WebCredential] {
         guard !searchText.isEmpty else { return store.credentials }
@@ -577,7 +591,7 @@ private struct PasswordSettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("已保存的密码")
                         .font(.title3.weight(.semibold))
-                    Text("密码加密保存在 macOS Keychain，此处只显示网站和账号。")
+                    Text(store.inMemory ? "此空白资料窗口的密码只保存在内存，关闭窗口后清除。" : "密码加密保存在 macOS Keychain，此处只显示网站和账号。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -589,6 +603,7 @@ private struct PasswordSettingsView: View {
             TextField("搜索网站或账号", text: $searchText)
                 .textFieldStyle(.roundedBorder)
 
+            #if !APP_STORE
             GroupBox("导入密码") {
                 VStack(alignment: .leading, spacing: 9) {
                     #if !APP_STORE
@@ -644,6 +659,9 @@ private struct PasswordSettingsView: View {
                 .padding(.vertical, 2)
             }
 
+            .onDisappear { sessionImporter.stop() }
+            #endif
+
             List(filteredCredentials) { credential in
                 HStack(spacing: 10) {
                     Image(systemName: "key.fill")
@@ -686,6 +704,7 @@ private struct PasswordSettingsView: View {
         }
     }
 
+    #if !APP_STORE
     private func importPasswords() {
         let panel = NSOpenPanel()
         panel.title = "选择 360 导出的密码 CSV"
@@ -710,7 +729,6 @@ private struct PasswordSettingsView: View {
         }
     }
 
-    #if !APP_STORE
     private func revealSessionBridge() {
         guard let resourceURL = Bundle.main.resourceURL else { return }
         let bridgeURL = resourceURL.appendingPathComponent("360SessionBridge", isDirectory: true)
