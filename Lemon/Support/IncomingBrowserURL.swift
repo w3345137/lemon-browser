@@ -273,6 +273,13 @@ enum IncomingBrowserURL {
 
     static var hasActiveHandler: Bool { handler != nil }
 
+    /// 取走最早收到的一条入口地址。窗口初始化时用它把第一个文件直接建成标签，
+    /// 避免先建空白标签、等视图出现后再补一次 load。
+    static func takePendingURL() -> URL? {
+        guard !queued.isEmpty else { return nil }
+        return queued.removeFirst()
+    }
+
     static func deliver(_ url: URL) {
         let scheme = url.scheme?.lowercased()
         guard scheme == "http" || scheme == "https" || url.isFileURL else { return }

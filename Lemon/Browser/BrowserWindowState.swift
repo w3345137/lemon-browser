@@ -149,8 +149,16 @@ final class BrowserWindowState: NSObject, ObservableObject {
             restoredSelectedIndex = restoredTabs.count - 1
             restoredClosedTabs = []
         } else if !ephemeral {
-            // 文档窗口：只留一个空白标签，等外部文件进来时顶掉它。
-            restoredTabs = [BrowserTab(isPrivate: false)]
+            // 文档窗口：排队的第一个地址直接建成标签，交给正常的启动激活流程加载。
+            // 先建空白标签、等视图出现后再补 load 的做法会让那次导航丢失，
+            // 留下一个一直转圈的白页。
+            if opensForIncomingDocument, let initialURL = IncomingBrowserURL.takePendingURL() {
+                restoredTabs = [BrowserTab(isPrivate: false, startURL: initialURL, loadsImmediately: false)]
+            } else {
+                restoredTabs = [BrowserTab(isPrivate: false)]
+                // 地址比窗口晚到时，仍然由这一个空白标签接住它。
+                adoptsFirstIncomingURL = opensForIncomingDocument
+            }
             restoredSelectedIndex = 0
             restoredClosedTabs = []
         } else {
@@ -162,7 +170,6 @@ final class BrowserWindowState: NSObject, ObservableObject {
         self.tabs = restoredTabs
         self.selectedTabID = restoredTabs[restoredSelectedIndex].id
         self.closedTabs = restoredClosedTabs
-        self.adoptsFirstIncomingURL = opensForIncomingDocument
         super.init()
         Self.activeDownloads[windowSessionID] = downloads
         if !ephemeral { Self.hasUsedPersistentProfile = true }
