@@ -16,7 +16,12 @@
 	<true/>
 	<key>com.apple.security.device.camera</key>
 	<true/>
+	<!-- 沙盒的麦克风权限 -->
 	<key>com.apple.security.device.microphone</key>
+	<true/>
+	<!-- 硬运行时（ENABLE_HARDENED_RUNTIME）的音频输入权限，与沙盒的
+	     microphone 是两条独立声明，缺一条录音就会在设备访问阶段被拦下。 -->
+	<key>com.apple.security.device.audio-input</key>
 	<true/>
 </dict>
 </plist>

@@ -25,7 +25,24 @@ xcodebuild \
 app_path="$archive_path/Products/Applications/Lemon.app"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 entitlements="$(/usr/bin/codesign -d --entitlements - "$app_path" 2>&1)"
-grep -q 'com.apple.security.app-sandbox' <<<"$entitlements"
+# 归档产物必须带上全部功能所需权限：少一条在沙盒或硬运行时下就是功能失效，
+# 而且失败点往往在真实使用（下载落盘、录音）时才暴露。
+for key in \
+  'com.apple.security.app-sandbox' \
+  'com.apple.security.cs.allow-jit' \
+  'com.apple.security.network.client' \
+  'com.apple.security.files.user-selected.read-write' \
+  'com.apple.security.files.downloads.read-write' \
+  'com.apple.security.files.bookmarks.app-scope' \
+  'com.apple.security.device.camera' \
+  'com.apple.security.device.microphone' \
+  'com.apple.security.device.audio-input'
+do
+  if ! grep -q "$key" <<<"$entitlements"; then
+    echo "App Store 归档缺少权限：$key" >&2
+    exit 1
+  fi
+done
 if grep -q 'com.apple.security.network.server' <<<"$entitlements"; then
   echo "App Store 归档不应包含网络服务端权限。" >&2
   exit 1

@@ -27,6 +27,9 @@ struct TestSandboxEntitlements {
             "com.apple.security.files.bookmarks.app-scope",
             "com.apple.security.device.camera",
             "com.apple.security.device.microphone",
+            // 沙盒的 microphone 与硬运行时的 audio-input 是两条独立声明，
+            // 只写其中一条时录音仍会被拦下。
+            "com.apple.security.device.audio-input",
         ]
         for key in required {
             precondition(dict[key] as? Bool == true, "缺少 entitlement: \(key)")
@@ -55,6 +58,20 @@ struct TestSandboxEntitlements {
                      "App Store 浏览器必须允许网络客户端访问")
         precondition(storeEntitlements?["com.apple.security.network.server"] == nil,
                      "App Store 版本不应包含 360 迁移服务的网络监听权限")
+        // 商店版同样要覆盖下载、本地文件、摄像头与麦克风；归档脚本另有产物断言。
+        let storeRequired: [String] = [
+            "com.apple.security.cs.allow-jit",
+            "com.apple.security.files.user-selected.read-write",
+            "com.apple.security.files.downloads.read-write",
+            "com.apple.security.files.bookmarks.app-scope",
+            "com.apple.security.device.camera",
+            "com.apple.security.device.microphone",
+            "com.apple.security.device.audio-input",
+        ]
+        for key in storeRequired {
+            precondition(storeEntitlements?[key] as? Bool == true,
+                         "App Store 版本缺少 entitlement: \(key)")
+        }
 
         let infoURL = root.appendingPathComponent("Lemon/Info.plist")
         let infoData = try Data(contentsOf: infoURL)
@@ -80,6 +97,10 @@ struct TestSandboxEntitlements {
             $0["NSPrivacyAccessedAPIType"] as? String == "NSPrivacyAccessedAPICategoryUserDefaults"
                 && ($0["NSPrivacyAccessedAPITypeReasons"] as? [String])?.contains("CA92.1") == true
         }, "必须声明 App 自身设置使用 UserDefaults")
+        precondition(accessed.contains {
+            $0["NSPrivacyAccessedAPIType"] as? String == "NSPrivacyAccessedAPICategoryFileTimestamp"
+                && ($0["NSPrivacyAccessedAPITypeReasons"] as? [String])?.contains("C617.1") == true
+        }, "图标缓存与下载校验读取文件时间戳，必须声明 FileTimestamp 用途")
 
         print("sandbox-entitlements-tests=passed")
     }

@@ -26,7 +26,12 @@
 	<!-- 网站摄像头/麦克风权限（Info.plist 已有用途说明字符串） -->
 	<key>com.apple.security.device.camera</key>
 	<true/>
+	<!-- 沙盒的麦克风权限 -->
 	<key>com.apple.security.device.microphone</key>
+	<true/>
+	<!-- 硬运行时的音频输入权限；Release 构建以 runtime 选项签名，
+	     只有沙盒声明时录音仍会在设备访问阶段被拦下。 -->
+	<key>com.apple.security.device.audio-input</key>
 	<true/>
 </dict>
 </plist>
