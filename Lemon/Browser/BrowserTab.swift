@@ -530,6 +530,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     func load(_ destination: URL) {
+        hasStartedNavigation = true
         lastAccessedAt = Date()
         lifecycleState = .active
         isStartPage = false
@@ -544,7 +545,20 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
             url = access.fileURL
             title = access.fileURL.lastPathComponent
             favicon = NSWorkspace.shared.icon(forFile: access.fileURL.path)
-            view.loadFileURL(access.fileURL, allowingReadAccessTo: access.readAccessURL)
+            // 沙盒通常只对“这一个文件”放行，没有父目录权限。此时把目录交给
+            // WebKit 会让整次导航被静默丢弃（页面永久空白转圈），所以只有
+            // 目录确实可读时才申请目录范围，让同目录样式和图片照常加载。
+            let dirURL = access.readAccessURL
+            let readAccess = FileManager.default.isReadableFile(atPath: dirURL.path)
+                ? dirURL
+                : access.fileURL
+            if readAccess == access.fileURL {
+                localFileNeedsDirectoryAccess = true
+                requestDirectoryAccessUpgrade()
+            } else {
+                localFileNeedsDirectoryAccess = false
+            }
+            view.loadFileURL(access.fileURL, allowingReadAccessTo: readAccess)
             return
         }
 
@@ -560,6 +574,13 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// 是否已经发起过第一次导航；启动激活用它避免重复加载。
+    private var hasStartedNavigation = false
+    /// 冷启动打开本地文件时，系统只给文件本身授权，同目录样式和图片读不到。
+    /// 标记下来，并在稍后重新请求一次带目录权限的打开。
+    private(set) var localFileNeedsDirectoryAccess = false
+    private var didRequestDirectoryAccessUpgrade = false
+
     func ensureWebView() -> WKWebView {
         if let webView { return webView }
 
@@ -571,8 +592,44 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     func activate() {
         lastAccessedAt = Date()
         lifecycleState = .active
-        guard !isStartPage, webView == nil, let url else { return }
+        guard !isStartPage, !hasStartedNavigation, let url else { return }
         load(url)
+    }
+
+    /// 冷启动时 LaunchServices 只授予单个文件的安全作用域。稍后把同一个文件
+    /// 再交给本应用打开一次，系统会连目录一起授权；收到第二次投递后由
+    /// adoptDirectoryAccessUpgrade 重载同一个标签，页面就能带样式和图片。
+    private func requestDirectoryAccessUpgrade() {
+        guard !didRequestDirectoryAccessUpgrade else { return }
+        didRequestDirectoryAccessUpgrade = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, self.localFileNeedsDirectoryAccess, let url = self.url else { return }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            NSWorkspace.shared.open(
+                [url],
+                withApplicationAt: Bundle.main.bundleURL,
+                configuration: configuration
+            )
+        }
+    }
+
+    func canAdoptDirectoryAccessUpgrade(for url: URL) -> Bool {
+        guard localFileNeedsDirectoryAccess,
+              let current = self.url?.standardizedFileURL else { return false }
+        return current == url.standardizedFileURL
+    }
+
+    /// 第二次投递只用来升级权限：命中同一个本地文件时重载该标签，不再开新标签。
+    func adoptDirectoryAccessUpgrade(for url: URL) {
+        localFileNeedsDirectoryAccess = false
+        load(url)
+    }
+
+    /// 启动阶段先只建 WebView，等它挂到窗口后再由 activate() 发起第一次导航。
+    /// WebView 还没有窗口时开始的导航会被丢弃，页面会一直空白转圈。
+    func prepareWebViewForStartup() {
+        _ = ensureWebView()
     }
 
     func markWarm() {

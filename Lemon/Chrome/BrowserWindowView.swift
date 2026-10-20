@@ -64,7 +64,7 @@ struct BrowserWindowView: View {
                 // 系统外链应交给当前聚焦的窗口；多窗口时后开的窗口不再抢走接收权。
                 guard !state.isPrivate else { return }
                 incomingURLToken = IncomingBrowserURL.attach { url in
-                    state.openInNewTab(url)
+                    state.receiveIncomingURL(url)
                 }
             },
             onWindowClose: {
@@ -103,7 +103,7 @@ struct BrowserWindowView: View {
         .onAppear {
             if !state.isPrivate {
                 incomingURLToken = IncomingBrowserURL.attach { url in
-                    state.openInNewTab(url)
+                    state.receiveIncomingURL(url)
                 }
             }
         }

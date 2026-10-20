@@ -223,6 +223,20 @@ final class BrowserWindowState: NSObject, ObservableObject {
         openInNewTab(item.url)
     }
 
+    /// 系统投递进来的地址。冷启动本地文件会先以单文件权限打开，随后同一次打开
+    /// 会被系统再投递一遍并带上目录权限，这时重载原标签即可。
+    func receiveIncomingURL(_ url: URL) {
+        if let tab = tabs.first(where: { $0.canAdoptDirectoryAccessUpgrade(for: url) }) {
+            tab.adoptDirectoryAccessUpgrade(for: url)
+            selectedTabID = tab.id
+            isAddressEditing = false
+            syncAddressBar()
+            requestPageFocus()
+            return
+        }
+        openInNewTab(url)
+    }
+
     func openInNewTab(_ url: URL, select: Bool = true) {
         // 文档窗口的首个地址顶掉那个空白标签，避免“起始页面 + 文件”两个标签。
         if adoptsFirstIncomingURL,
@@ -826,11 +840,22 @@ final class BrowserWindowState: NSObject, ObservableObject {
     private func activateStartupTabs() {
         // 体验模式对齐 Chromium 关闭 Memory Saver：恢复会话后立即为
         // 所有标签创建 WKWebView，标签关闭前不由 Lemon 销毁页面。
-        selectedTab?.activate()
-        for tab in tabs where tab.id != selectedTabID {
-            tab.activate()
+        for tab in tabs {
+            tab.prepareWebViewForStartup()
         }
-        enforceTabLifecycle()
+        // PageStage 只认 `tabs` 的变化来收集各标签的 WKWebView。启动激活发生在
+        // 视图渲染之后，不通知一次的话 WebView 挂不上窗口，之后发起的导航会被
+        // 丢弃，页面停在空白转圈。
+        objectWillChange.send()
+        // 等 SwiftUI 把 WebView 装进窗口后再开始导航。
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.selectedTab?.activate()
+            for tab in self.tabs where tab.id != self.selectedTabID {
+                tab.activate()
+            }
+            self.enforceTabLifecycle()
+        }
     }
 
     private func openBlankTabAndFocusAddress() {
