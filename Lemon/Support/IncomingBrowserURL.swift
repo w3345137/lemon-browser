@@ -226,12 +226,52 @@ enum LocalFileAccessStore {
     }
 }
 
+/// SwiftUI 的 openWindow 只能在视图或命令环境里取得。菜单构建时把动作存进来，
+/// 让 AppDelegate 在“当前没有窗口”时也能开出一个普通窗口。
+@MainActor
+enum WindowRouter {
+    private static var openMainWindowAction: (() -> Void)?
+    private static var pendingOpenAttempts = 0
+
+    static func register(openMainWindow: @escaping () -> Void) {
+        openMainWindowAction = openMainWindow
+    }
+
+    /// 命令菜单尚未建立（极早的启动阶段）时重试几次；仍拿不到就重新激活自身，
+    /// 让系统补一个窗口，保证打开文件一定有个落脚处。
+    static func openMainWindow() {
+        if let openMainWindowAction {
+            pendingOpenAttempts = 0
+            openMainWindowAction()
+            return
+        }
+        guard pendingOpenAttempts < 4 else {
+            pendingOpenAttempts = 0
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration)
+            return
+        }
+        pendingOpenAttempts += 1
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            openMainWindow()
+        }
+    }
+}
+
 @MainActor
 enum IncomingBrowserURL {
     private static var queued: [URL] = []
     private static var last: (url: URL, at: Date)?
     private static var handler: ((URL) -> Void)?
     private static var handlerToken: UUID?
+
+    /// 仍有已收到、尚未被任何窗口接走的入口地址。窗口初始化据此判断自己是不是
+    /// “为这次打开而新建的窗口”，从而跳过历史会话恢复。
+    static var hasPendingDelivery: Bool { !queued.isEmpty }
+
+    static var hasActiveHandler: Bool { handler != nil }
 
     static func deliver(_ url: URL) {
         let scheme = url.scheme?.lowercased()
@@ -297,11 +337,21 @@ final class LemonAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        NSAppleEventManager.shared().setEventHandler(
+        let manager = NSAppleEventManager.shared()
+        manager.setEventHandler(
             self,
             andSelector: #selector(handleGetURLEvent(_:withReplyEvent:)),
             forEventClass: AEEventClass(kInternetEventClass),
             andEventID: AEEventID(kAEGetURL)
+        )
+        // 自己接管 odoc。交给默认处理时 SwiftUI 会为每个文档再开一个窗口，
+        // 而那个新窗口又会认领一条历史会话，双击本地 html 就变成
+        // “多了个实例 + 一屏以前的历史标签”。
+        manager.setEventHandler(
+            self,
+            andSelector: #selector(handleOpenDocumentsEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kCoreEventClass),
+            andEventID: AEEventID(kAEOpenDocuments)
         )
     }
 
@@ -314,8 +364,56 @@ final class LemonAppDelegate: NSObject, NSApplicationDelegate {
     @objc func handleGetURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
         guard let string = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
               let url = URL(string: string) else { return }
-        Task { @MainActor in
+        // 和文档一样同步入队：没有窗口时随后开一个，避免链接只进了队列却没人接。
+        MainActor.assumeIsolated {
             IncomingBrowserURL.deliver(url)
+            guard !IncomingBrowserURL.hasActiveHandler else { return }
+            NSApplication.shared.activate()
+            WindowRouter.openMainWindow()
         }
+    }
+
+    @objc func handleOpenDocumentsEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
+        // Apple Event 在启动阶段的主线程派发。同步处理才能保证文件先入队、
+        // 窗口后创建，新窗口这时才判得出自己不恢复旧会话。
+        MainActor.assumeIsolated {
+            let urls = Self.fileURLs(fromOpenDocumentsEvent: event)
+            guard !urls.isEmpty else { return }
+            urls.forEach(IncomingBrowserURL.deliver)
+            guard !IncomingBrowserURL.hasActiveHandler else { return }
+            NSApplication.shared.activate()
+            WindowRouter.openMainWindow()
+        }
+    }
+
+    /// odoc 的直接对象是文件列表。Finder 一般给 typeFileURL，别名或其他来源
+    /// 的描述符需要再走一次 coerce。
+    static func fileURLs(fromOpenDocumentsEvent event: NSAppleEventDescriptor) -> [URL] {
+        guard let list = event.paramDescriptor(forKeyword: keyDirectObject) else { return [] }
+        if list.numberOfItems == 0 {
+            return [fileURL(from: list)].compactMap { $0 }
+        }
+        return (1...list.numberOfItems).compactMap { index in
+            list.atIndex(index).flatMap(fileURL(from:))
+        }
+    }
+
+    private static func fileURL(from descriptor: NSAppleEventDescriptor) -> URL? {
+        if let url = descriptor.fileURLValue, url.isFileURL {
+            return url
+        }
+        if let coerced = descriptor.coerce(toDescriptorType: typeFileURL),
+           let string = coerced.stringValue,
+           let url = URL(string: string),
+           url.isFileURL {
+            return url
+        }
+        if let string = descriptor.stringValue {
+            let path = (string as NSString).expandingTildeInPath
+            if path.hasPrefix("/") {
+                return URL(fileURLWithPath: path)
+            }
+        }
+        return nil
     }
 }

@@ -72,6 +72,9 @@ final class BrowserWindowState: NSObject, ObservableObject {
     private var persistWorkItem: DispatchWorkItem?
     private var pendingSelectionID: BrowserTab.ID?
     private var pendingCloseTabIDs: Set<BrowserTab.ID> = []
+    /// 这个窗口是为外部文档/链接新建的：第一个入口地址直接顶掉空白标签，
+    /// 不额外留下一个起始页。
+    private var adoptsFirstIncomingURL = false
 
     init(isPrivate: Bool = false, isDemo: Bool = false) {
         let ephemeral = isPrivate || isDemo
@@ -93,13 +96,21 @@ final class BrowserWindowState: NSObject, ObservableObject {
 
         // 多窗口恢复：认领一条尚未被活窗口使用的会话记录；没有可认领的
         // 记录时给窗口分配新身份，旧版 pinnedTabURLs 迁移逻辑保持不变。
+        // 为一次外部文档/链接新建的窗口不认领：文件进哪个窗口，哪个窗口就
+        // 只装这次打开的内容。
+        let opensForIncomingDocument = IncomingBrowserURL.hasPendingDelivery
+        let mayRestoreSession = WindowSessionRestorePolicy.shouldClaimRestorableSession(
+            isEphemeral: ephemeral,
+            hasPendingIncomingDocument: opensForIncomingDocument
+        )
         let claimed: (windowID: String, snapshot: BrowserSessionSnapshot)?
         if ephemeral {
             claimed = nil
             self.windowSessionID = UUID().uuidString
-        } else if let claim = BrowserSessionStore.claimRestorableSession(
-            claimedIDs: Self.claimedWindowSessionIDs
-        ) {
+        } else if mayRestoreSession,
+                  let claim = BrowserSessionStore.claimRestorableSession(
+                      claimedIDs: Self.claimedWindowSessionIDs
+                  ) {
             claimed = claim
             self.windowSessionID = claim.windowID
             Self.claimedWindowSessionIDs.insert(claim.windowID)
@@ -126,7 +137,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
             }
             restoredSelectedIndex = min(max(0, session.selectedIndex), restoredTabs.count - 1)
             restoredClosedTabs = session.closedTabs
-        } else if !ephemeral {
+        } else if !ephemeral && !opensForIncomingDocument {
             let legacyPinned = UserDefaults.standard.stringArray(forKey: "pinnedTabURLs.v1") ?? []
             UserDefaults.standard.removeObject(forKey: "pinnedTabURLs.v1")
             let pinned = legacyPinned.compactMap(URL.init(string:)).map { url in
@@ -137,6 +148,11 @@ final class BrowserWindowState: NSObject, ObservableObject {
             restoredTabs = pinned.isEmpty ? [BrowserTab(isPrivate: false)] : pinned + [BrowserTab(isPrivate: false)]
             restoredSelectedIndex = restoredTabs.count - 1
             restoredClosedTabs = []
+        } else if !ephemeral {
+            // 文档窗口：只留一个空白标签，等外部文件进来时顶掉它。
+            restoredTabs = [BrowserTab(isPrivate: false)]
+            restoredSelectedIndex = 0
+            restoredClosedTabs = []
         } else {
             restoredTabs = [BrowserTab(isPrivate: isPrivate, dataStore: dataStore)]
             restoredSelectedIndex = 0
@@ -146,6 +162,7 @@ final class BrowserWindowState: NSObject, ObservableObject {
         self.tabs = restoredTabs
         self.selectedTabID = restoredTabs[restoredSelectedIndex].id
         self.closedTabs = restoredClosedTabs
+        self.adoptsFirstIncomingURL = opensForIncomingDocument
         super.init()
         Self.activeDownloads[windowSessionID] = downloads
         if !ephemeral { Self.hasUsedPersistentProfile = true }
@@ -200,6 +217,20 @@ final class BrowserWindowState: NSObject, ObservableObject {
     }
 
     func openInNewTab(_ url: URL, select: Bool = true) {
+        // 文档窗口的首个地址顶掉那个空白标签，避免“起始页面 + 文件”两个标签。
+        if adoptsFirstIncomingURL,
+           tabs.count == 1,
+           let only = tabs.first,
+           only.url == nil {
+            adoptsFirstIncomingURL = false
+            only.load(url)
+            selectedTabID = only.id
+            isAddressEditing = false
+            syncAddressBar()
+            if select { requestPageFocus() }
+            return
+        }
+        adoptsFirstIncomingURL = false
         let tab = BrowserTab(isPrivate: isPrivate, startURL: url, dataStore: websiteDataStore)
         tab.windowState = self
         insert(tab, after: selectedIndex, select: select)

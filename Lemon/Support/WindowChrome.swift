@@ -68,6 +68,10 @@ struct WindowChrome: NSViewRepresentable {
         window.backgroundColor = isPrivate
             ? NSColor(calibratedWhite: 0.11, alpha: 1)
             : NSColor.windowBackgroundColor
+        // 窗口恢复由 Lemon 自己的会话存储负责。交给 AppKit 恢复时，上次每个
+        // 窗口都会被还原，每个还原窗口又认领一条会话记录，打开文件就变成
+        // 一屏历史标签。
+        window.isRestorable = false
         window.minSize = NSSize(width: 780, height: 520)
         window.tabbingMode = .disallowed
         coordinator.install(on: window)

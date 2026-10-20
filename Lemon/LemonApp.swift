@@ -11,6 +11,10 @@ struct LemonApp: App {
     private let launchesInDemo = ProcessInfo.processInfo.arguments.contains("--demo")
 
     init() {
+        // 关掉 AppKit 的窗口恢复：它会把上次每个窗口都还原回来，而每个窗口
+        // 又各自认领一条会话记录，启动和打开文件时就会铺开一屏历史标签。
+        // 窗口与标签的恢复统一交给 BrowserSessionStore。
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
         if !launchesInDemo { LemonIdentityMigration.runIfNeeded() }
         ContentBlocker.shared.prepare()
     }
@@ -59,6 +63,8 @@ struct BrowserCommands: Commands {
     @Environment(\.openSettings) private var openSettings
 
     var body: some Commands {
+        // 菜单构建时就拿到 openWindow，供 AppDelegate 在“没有窗口”时开窗。
+        let _ = WindowRouter.register { openWindow(id: "main") }
         CommandGroup(replacing: .newItem) {
             Button(state?.isDemo == true ? "新建演示窗口" : "新建窗口") {
                 openWindow(id: state?.isDemo == true ? "demo" : "main")

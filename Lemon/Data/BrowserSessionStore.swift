@@ -54,6 +54,18 @@ struct BrowserSessionSnapshot: Codable {
     }
 }
 
+/// 新建窗口时该不该认领一条历史会话。
+enum WindowSessionRestorePolicy {
+    /// 为一次外部文档/链接打开而新建的窗口不恢复旧会话，否则“打开文件”会顺带
+    /// 摊开一屏历史标签。无痕窗口本来就不参与持久化。
+    static func shouldClaimRestorableSession(
+        isEphemeral: Bool,
+        hasPendingIncomingDocument: Bool
+    ) -> Bool {
+        !isEphemeral && !hasPendingIncomingDocument
+    }
+}
+
 /// 会话文件按窗口分桶：每个普通窗口持有稳定 UUID，读写只替换自己的记录。
 /// 旧版单窗口 session.json 在读取时一次性包装成窗口记录，写回时升级格式。
 struct BrowserSessionFile: Codable {

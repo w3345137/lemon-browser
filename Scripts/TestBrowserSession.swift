@@ -108,6 +108,17 @@ struct TestBrowserSession {
         let file = try JSONDecoder().decode(BrowserSessionFile.self, from: fileData)
         precondition(file.windows.count == BrowserSessionFile.maxWindowRecords)
 
+        // 为外部文档/链接新建的窗口不认领旧会话，否则“打开文件”会摊开一屏历史标签。
+        precondition(WindowSessionRestorePolicy.shouldClaimRestorableSession(
+            isEphemeral: false, hasPendingIncomingDocument: false
+        ))
+        precondition(!WindowSessionRestorePolicy.shouldClaimRestorableSession(
+            isEphemeral: false, hasPendingIncomingDocument: true
+        ))
+        precondition(!WindowSessionRestorePolicy.shouldClaimRestorableSession(
+            isEphemeral: true, hasPendingIncomingDocument: false
+        ))
+
         print("browser-session-tests=passed")
     }
 }
