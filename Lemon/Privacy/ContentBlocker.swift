@@ -47,10 +47,10 @@ final class ContentBlocker: ObservableObject {
         NotificationCenter.default.post(name: .lemonContentBlockerDidChange, object: nil)
     }
 
-    func install(on configuration: WKWebViewConfiguration) {
+    func install(on configuration: WKWebViewConfiguration, temporarilyDisabled: Bool = false) {
         guard let compiledList else { return }
         configuration.userContentController.remove(compiledList)
-        if isEnabled {
+        if isEnabled && !temporarilyDisabled {
             configuration.userContentController.add(compiledList)
         }
     }

@@ -248,9 +248,16 @@ private struct NavigationFailureNotice: View {
         if let error = tab.navigationError {
             VStack(spacing: 14) {
                 Image(systemName: "exclamationmark.triangle").font(.system(size: 36))
-                Text("网页加载失败").font(.headline)
+                Text(tab.isContentBlocked ? "网页已被内容拦截器阻止" : "网页加载失败").font(.headline)
                 Text(error).font(.callout).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center).frame(maxWidth: 480)
+                if tab.canAllowBlockedPage {
+                    Text("如果你信任此网站，可以手动放行。仅本标签页临时关闭内容拦截，刷新或访问其他网站后恢复。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center).frame(maxWidth: 480)
+                    Button("仍然访问") { tab.allowBlockedPage() }
+                        .buttonStyle(.borderedProminent)
+                }
                 HStack {
                     if tab.webView?.backForwardList.currentItem != nil {
                         Button("返回原页面") { tab.returnToLoadedPage() }

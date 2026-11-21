@@ -505,25 +505,45 @@ final class BrowserWindowState: NSObject, ObservableObject {
 
     private var automaticFillInFlight = Set<UUID>()
 
+    private var automaticFillPending = Set<UUID>()
+
     func tryAutomaticCredentialFill(_ tab: BrowserTab) {
         guard !isPrivate, selectedTab === tab, !tab.isLoading, tab.navigationError == nil, let view = tab.webView,
               let url = view.url, url.scheme == "https" else { return }
-        let matches = credentials.credentials(for: url)
         let preferred = isDemo ? [:] : UserDefaults.standard.dictionary(forKey: "preferredFillAccounts") as? [String: String] ?? [:]
-        let credential = matches.count == 1 ? matches.first : matches.first { preferred[$0.scope] == $0.id }
-        guard let credential, !credential.username.isEmpty else { return }
-        guard automaticFillInFlight.insert(tab.id).inserted else { return }
+        guard automaticFillInFlight.insert(tab.id).inserted else {
+            automaticFillPending.insert(tab.id)
+            return
+        }
         let revision = tab.navigationRevision
-        // Probe without secrets first. Automatic fill never targets a cross-origin
-        // frame, submits the form, or replaces fields the user has started editing.
-        view.evaluateJavaScript(CredentialBridge.automaticFillReadinessScript) { [weak self, weak tab, weak view] result, _ in
-            Task { @MainActor in
-                guard let self, let tab else { return }
-                defer { self.automaticFillInFlight.remove(tab.id) }
-                guard let view, self.selectedTab === tab, tab.navigationRevision == revision,
-                      tab.webView === view, view.url == url, result as? Bool == true,
-                      let password = try? self.credentials.password(for: credential) else { return }
+        Task { @MainActor in
+            defer {
+                automaticFillInFlight.remove(tab.id)
+                if automaticFillPending.remove(tab.id) != nil { tryAutomaticCredentialFill(tab) }
+            }
+            @MainActor func isCurrent() -> Bool {
+                selectedTab === tab && tab.navigationRevision == revision && tab.webView === view && view.url == url
+            }
+            for scope in tab.credentialScopes {
+                guard isCurrent() else { return }
+                let matches = credentials.credentials(forScope: scope)
+                guard !matches.isEmpty else { continue }
+                let account: String? = await withCheckedContinuation { continuation in
+                    tab.evaluateCredentialScript(CredentialBridge.automaticFillReadinessScript, scope: scope) {
+                        continuation.resume(returning: $0 as? String)
+                    }
+                }
+                guard isCurrent(), let account else { continue }
+                let credential: WebCredential?
+                if account.isEmpty {
+                    credential = matches.count == 1 ? matches.first : matches.first { preferred[scope] == $0.id }
+                } else {
+                    credential = matches.first { $0.username == account }
+                }
+                guard let credential, !credential.username.isEmpty,
+                      let password = try? credentials.password(for: credential) else { continue }
                 tab.fill(credential, password: password, automatic: true) { _ in }
+                return
             }
         }
     }

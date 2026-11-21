@@ -92,6 +92,14 @@ run_test TestNavigationLoading \
   "$project_root/Scripts/TestNavigationLoading.swift" \
   "${TAB_HARNESS[@]}"
 
+run_test TestInputMethod \
+  "$project_root/Scripts/TestInputMethod.swift" \
+  "${TAB_HARNESS[@]}"
+
+run_test TestContentBlockerBypass \
+  "$project_root/Scripts/TestContentBlockerBypass.swift" \
+  "${TAB_HARNESS[@]}"
+
 run_test TestPrivateSession \
   "$project_root/Scripts/TestPrivateSession.swift" \
   "${TAB_HARNESS[@]}"
@@ -175,6 +183,10 @@ run_test TestSandboxEntitlements \
 
 run_test TestContentBlockerRules \
   "$project_root/Scripts/TestContentBlockerRules.swift" \
+  "$project_root/Lemon/Privacy/ContentBlockerRules.swift"
+
+run_test TestContentBlockerNavigation \
+  "$project_root/Scripts/TestContentBlockerNavigation.swift" \
   "$project_root/Lemon/Privacy/ContentBlockerRules.swift"
 
 run_test TestCredentialSite \

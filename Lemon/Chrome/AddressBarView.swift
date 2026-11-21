@@ -194,7 +194,7 @@ private struct AddressBarContent: View {
             }
 
             if let tab = state.selectedTab, tab.hasLoadedPage, !state.isAddressEditing {
-                let siteCredentials = credentialStore.credentials(for: tab.url)
+                let siteCredentials = tab.credentialScopes.flatMap { credentialStore.credentials(forScope: $0) }
                 if !siteCredentials.isEmpty {
                     Menu {
                         ForEach(siteCredentials) { credential in

@@ -17,7 +17,7 @@ enum CredentialBridge {
 
 final class ContentBlocker {
     static let shared = ContentBlocker()
-    func install(on configuration: WKWebViewConfiguration) {}
+    func install(on configuration: WKWebViewConfiguration, temporarilyDisabled: Bool = false) {}
 }
 
 final class FocusProbe: NSView {

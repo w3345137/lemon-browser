@@ -69,7 +69,7 @@ Lemon 只借鉴行业浏览器公开的交互模式与状态机，不复制 Chro
 
 ## App Store 沙盒
 
-Mac App Store 版在 App Sandbox 中运行，entitlements 按需最小化：网络客户端、仅监听 `127.0.0.1` 的迁移接收服务、`~/Downloads` 读写、用户选择文件读写、本地文件安全书签，以及摄像头/麦克风。工程默认启用沙盒（`ENABLE_APP_SANDBOX = YES`），GitHub Actions 与本机构建的 ad-hoc 版本同样带沙盒运行。
+Mac App Store 版在 App Sandbox 中运行，entitlements 按需最小化：网络客户端、`~/Downloads` 读写、用户选择文件读写、本地文件安全书签，以及摄像头/麦克风。工程默认启用沙盒（`ENABLE_APP_SANDBOX = YES`），GitHub Actions 与本机构建的 ad-hoc 版本同样带沙盒运行。
 
 - 沙盒内无法读取其他 App 的本地数据，因此 App Store 版不做旧版本地文件自动合并；旧版（非沙盒）数据可在旧版内通过迁移桥导出，或重新导入书签。
 - 沙盒内不能直写默认浏览器登记，设置默认浏览器统一走 `NSWorkspace` 公开 API 并引导系统设置确认。

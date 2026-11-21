@@ -53,6 +53,13 @@ struct TestCredentialCodeFields {
         """)
         try await Task.sleep(nanoseconds: 350_000_000)
         precondition(messages.submissions.isEmpty, "Sending a verification code is not a login submission")
+        _ = try await view.evaluateJavaScript("""
+        const realPassword = document.querySelector('input[autocomplete=current-password]');
+        realPassword.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', isComposing:true, bubbles:true}));
+        realPassword.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', keyCode:229, bubbles:true}));
+        """)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        precondition(messages.submissions.isEmpty, "IME confirmation must not offer password saving")
         _ = try await view.evaluateJavaScript("document.getElementById('login').click()")
         try await Task.sleep(nanoseconds: 350_000_000)
         precondition(messages.submissions.count == 1)
@@ -74,6 +81,17 @@ struct TestCredentialCodeFields {
         _ = try await view.evaluateJavaScript("document.querySelector('[name=username]').value='';document.querySelector('[name=authcode]').value='';document.querySelector('[name=username]').focus()")
         let automatic = try await view.evaluateJavaScript("window.__lemonPerformFill('fixture-user','fixture-password',true) && document.activeElement.name==='username'")
         precondition(automatic as? Bool == true, "Automatic fill must preserve focus")
+        _ = try await view.evaluateJavaScript("document.querySelector('[name=authcode]').value='';window.accountEdits=0;document.querySelector('[name=username]').oninput=()=>window.accountEdits++;true")
+        let account = try await view.evaluateJavaScript(CredentialBridge.automaticFillReadinessScript)
+        precondition(account as? String == "fixture-user")
+        let safe = try await view.evaluateJavaScript("""
+        !window.__lemonPerformFill('other','wrong',true) &&
+        document.querySelector('[name=authcode]').value==='' &&
+        window.__lemonPerformFill('fixture-user','correct',true) &&
+        !window.__lemonPerformFill('fixture-user','replacement',true) &&
+        document.querySelector('[name=authcode]').value==='correct' && window.accountEdits===0
+        """)
+        precondition(safe as? Bool == true)
         _ = try await view.evaluateJavaScript("document.querySelector('[name=authcode]').autocomplete='one-time-code';document.querySelector('[name=authcode]').value=''")
         let otpFilled = try await view.evaluateJavaScript("window.__lemonPerformFill('fixture-user','fixture-password')")
         precondition(otpFilled as? Bool == false)

@@ -5,6 +5,25 @@ import WebKit
 // 真实 WKWebView + 真实 CredentialBridge 的端到端填充测试。
 // 依赖 Scripts/Fixtures/LoginFixtureServer.py（run-tests.sh 会自动拉起）：
 //   18771 直接登录表单；18771/iframe-parent.html 内嵌 18772 跨源 iframe 登录框。
+@MainActor
+private func readFrameValues(_ tab: BrowserTab) -> String? {
+    var posted = false
+    tab.webView?.evaluateJavaScript("""
+        window.fixtureValues = null;
+        addEventListener('message', event => {
+            if (event.origin === 'http://localhost:18772' && typeof event.data.fixtureValues === 'string') window.fixtureValues = event.data.fixtureValues;
+        });
+        document.querySelector('iframe').contentWindow.postMessage('fixture-read-values', 'http://localhost:18772');
+        """) { _, _ in posted = true }
+    guard waitFor(2, condition: { posted }) else { return nil }
+    var values: String?
+    _ = waitFor(2) {
+        tab.webView?.evaluateJavaScript("window.fixtureValues") { value, _ in values = value as? String }
+        return values != nil
+    }
+    return values
+}
+
 @main
 enum TestCredentialFillLive {
     @MainActor
@@ -107,6 +126,43 @@ enum TestCredentialFillLive {
             tab.webView?.evaluateJavaScript("window.fixtureEmpty") { value, _ in empty = value as? Bool }
             precondition(waitFor(2) { empty != nil })
             precondition(empty == true, "No secret may reach the cross-origin frame even if the callback says failure")
+            tab.tearDown()
+        }
+
+        // 3b. 同站内嵌登录框（App Store Connect 内嵌 idmsa.apple.com 的场景）：
+        //     凭据按框架源保存，只填进源完全一致的框架，并能在框架里捕获提交。
+        do {
+            let tab = BrowserTab(isPrivate: false, startURL: URL(string: "http://localhost:18771/iframe-parent.html")!, loadsImmediately: false)
+            tab.windowState = windowState
+            tab.activate()
+            let loadedBefore = windowState.finishedNavigations
+            precondition(waitFor(10) { windowState.finishedNavigations > loadedBefore }, "iframe parent did not finish loading")
+            precondition(waitFor(5) { tab.credentialScopes.contains("http://localhost:18772") },
+                         "same-site login frame was not registered: \(tab.credentialScopes)")
+            precondition(tab.credentialScopes.first == "http://localhost:18771", "page scope must stay first")
+
+            var fillResult: Bool?
+            tab.fill(WebCredential(scope: "http://localhost:18772", username: "frame-qa"), password: "frame-pass") { ok in
+                fillResult = ok
+            }
+            precondition(waitFor(5) { fillResult != nil }, "frame fill completion never fired")
+            precondition(fillResult == true, "same-site frame fill reported failure")
+            precondition(readFrameValues(tab) == "frame-qa|frame-pass", "frame fill did not land")
+
+            // 捕获：框架内提交 → 登录框消失 → 按框架源提示保存。
+            let previousDelay = BrowserTab.credentialCaptureConfirmDelay
+            BrowserTab.credentialCaptureConfirmDelay = 0.5
+            defer { BrowserTab.credentialCaptureConfirmDelay = previousDelay }
+            let offeredBefore = windowState.offeredCredentials.count
+            var posted = false
+            tab.webView?.evaluateJavaScript(
+                "document.querySelector('iframe').contentWindow.postMessage('fixture-submit', 'http://localhost:18772')"
+            ) { _, _ in posted = true }
+            precondition(waitFor(2) { posted })
+            precondition(waitFor(5) { windowState.offeredCredentials.count > offeredBefore }, "frame login was not offered for saving")
+            let offered = windowState.offeredCredentials.last!
+            precondition(offered.scope == "http://localhost:18772" && offered.username == "frame-user",
+                         "frame credential saved under wrong scope: \(offered)")
             tab.tearDown()
         }
 

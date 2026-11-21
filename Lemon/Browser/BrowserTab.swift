@@ -55,6 +55,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     @Published var isStartPage: Bool
     @Published var isLoading = false
     @Published private(set) var navigationError: String?
+    @Published private(set) var isContentBlocked = false
+    private(set) var contentBlockingBypassURL: URL?
     @Published private(set) var slowPageNotice: String?
     @Published private(set) var canRetrySlowPage = false
     @Published var estimatedProgress: Double = 0
@@ -85,6 +87,11 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     private var titleObserver: NSKeyValueObservation?
     private var urlObserver: NSKeyValueObservation?
     private var lastOfferedCredential: (scope: String, username: String, password: String)?
+    /// 页面内嵌的同站登录框（如 App Store Connect 内嵌的 idmsa.apple.com）。
+    /// 键是 WebKit 给出的框架源；凭据只会填进源完全一致的框架。
+    private var credentialFrames: [String: WKFrameInfo] = [:]
+    /// 当前页面可用的凭据源：主框架在前，其后是内嵌登录框。
+    @Published private(set) var credentialFrameScopes: [String] = []
     private(set) var savedScrollPosition: CGPoint?
     private var ownsScriptMessageHandlers = false
     private var localFileAccess: LocalFileAccessLease?
@@ -221,6 +228,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     func reload() {
+        resetContentBlockingBypass()
         savedScrollPosition = nil
         // 崩溃占位上的“重新载入”和菜单 ⌘R 走同一条路径；崩溃后
         // webView.reload() 会让 WebKit 重新拉起 WebContent 进程。
@@ -253,6 +261,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
 
     func returnToLoadedPage() {
         guard webView?.backForwardList.currentItem != nil else { return }
+        resetContentBlockingBypass()
+        isContentBlocked = false
         failedRequest = nil
         pendingRequest = nil
         navigationError = nil
@@ -407,6 +417,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         let username: String
         let password: String
         let pageURL: URL?
+        /// 来自内嵌登录框时记录该框架，登录是否完成要在原框架里判断。
+        var frame: WKFrameInfo? = nil
     }
     private var pendingCredentialCapture: PendingCredentialCapture?
     private(set) var navigationRevision = UUID()
@@ -415,9 +427,33 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     /// 延迟后检查 SPA 表单是否已消失；经过时间不代表登录成功。
     static var credentialCaptureConfirmDelay: TimeInterval = 6
 
+    /// 当前页面可用于查询凭据的源：页面自身 + 已报告登录表单的同站内嵌框架。
+    var credentialScopes: [String] {
+        let pageScope = webView?.url.flatMap(CredentialStore.scope(for:))
+        return (pageScope.map { [$0] } ?? []) + credentialFrameScopes.filter { $0 != pageScope }
+    }
+
+    /// 在凭据所属的框架里执行脚本：主框架同源走主框架，否则只走源完全一致的内嵌框架。
+    func evaluateCredentialScript(_ script: String, scope: String, completion: @escaping (Any?) -> Void) {
+        guard let webView else { return completion(nil) }
+        if CredentialStore.sharesSite(origin: scope, with: webView.url) {
+            webView.evaluateJavaScript(script) { result, _ in completion(result) }
+        } else if let frame = credentialFrames[scope] {
+            webView.evaluateJavaScript(script, in: frame, in: .page) { result in
+                if case let .success(value) = result { completion(value) } else { completion(nil) }
+            }
+        } else {
+            completion(nil)
+        }
+    }
+
     func fill(_ credential: WebCredential, password: String, automatic: Bool = false, completion: @escaping (Bool) -> Void) {
-        guard let webView, CredentialStore.sharesSite(origin: credential.scope, with: webView.url) else {
+        guard let webView else {
             completion(false)
+            return
+        }
+        guard CredentialStore.sharesSite(origin: credential.scope, with: webView.url) else {
+            fillFrame(credential, password: password, automatic: automatic, webView: webView, completion: completion)
             return
         }
         let token = UUID().uuidString
@@ -454,6 +490,47 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    /// 填充内嵌的同站登录框。WKFrameInfo 只是快照，框架可能已经跳到别的源，
+    /// 因此脚本在框架内再次核对 location.origin，不一致就不写入任何值。
+    private func fillFrame(_ credential: WebCredential, password: String, automatic: Bool,
+                           webView: WKWebView, completion: @escaping (Bool) -> Void) {
+        guard let frame = credentialFrames[credential.scope],
+              CredentialStore.isSameSite(origin: credential.scope, with: webView.url) else {
+            completion(false)
+            return
+        }
+        let script = """
+            if (location.origin !== expectedOrigin) return false;
+            if (typeof window.__lemonPerformFill !== 'function') return false;
+            return !!window.__lemonPerformFill(username, password, automatic);
+            """
+        webView.callAsyncJavaScript(
+            script,
+            arguments: [
+                "expectedOrigin": credential.scope,
+                "username": credential.username,
+                "password": password,
+                "automatic": automatic
+            ],
+            in: frame,
+            in: .page
+        ) { result in
+            Task { @MainActor in
+                if case let .success(value) = result { completion(value as? Bool == true) } else { completion(false) }
+            }
+        }
+    }
+
+    private func rememberCredentialFrame(_ frame: WKFrameInfo, scope: String) {
+        credentialFrames[scope] = frame
+        if !credentialFrameScopes.contains(scope) { credentialFrameScopes.append(scope) }
+    }
+
+    private func resetCredentialFrames() {
+        credentialFrames.removeAll()
+        if !credentialFrameScopes.isEmpty { credentialFrameScopes.removeAll() }
+    }
+
     private func completeFill(token: String, ok: Bool) {
         guard pendingFillToken == token, let completion = pendingFillCompletion else { return }
         pendingFillToken = nil
@@ -463,7 +540,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         completion(ok)
     }
 
-    func recordCredentialCapture(scope: String, username: String, password: String, pageURL: URL?) {
+    func recordCredentialCapture(scope: String, username: String, password: String, pageURL: URL?,
+                                 frame: WKFrameInfo? = nil) {
         if let previous = lastOfferedCredential,
            previous.scope == scope,
            previous.username == username,
@@ -471,13 +549,14 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
             return
         }
         pendingCredentialCapture = PendingCredentialCapture(
-            scope: scope, username: username, password: password, pageURL: pageURL
+            scope: scope, username: username, password: password, pageURL: pageURL, frame: frame
         )
         credentialCaptureWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, let view = self.webView else { return }
             let captured = self.pendingCredentialCapture
-            view.evaluateJavaScript("typeof window.__lemonHasCredentialChallenge === 'function' && !window.__lemonHasCredentialChallenge()") { [weak self, weak view] result, error in
+            let probe = "typeof window.__lemonHasCredentialChallenge === 'function' && !window.__lemonHasCredentialChallenge()"
+            let handle: (Any?, Error?) -> Void = { [weak self, weak view] result, error in
                 DispatchQueue.main.async {
                     guard let self, let view, self.webView === view,
                           error == nil, result as? Bool == true,
@@ -487,6 +566,17 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
                           pending.password == captured?.password else { return }
                     self.flushCredentialCapture()
                 }
+            }
+            // 内嵌登录框的验证码/二次验证仍在原框架里，必须在原框架判断。
+            if let frame = captured?.frame {
+                view.evaluateJavaScript(probe, in: frame, in: .page) { result in
+                    switch result {
+                    case let .success(value): handle(value, nil)
+                    case let .failure(error): handle(nil, error)
+                    }
+                }
+            } else {
+                view.evaluateJavaScript(probe) { result, error in handle(result, error) }
             }
         }
         credentialCaptureWorkItem = workItem
@@ -530,6 +620,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     func load(_ destination: URL) {
+        resetContentBlockingBypass()
         hasStartedNavigation = true
         lastAccessedAt = Date()
         lifecycleState = .active
@@ -660,20 +751,69 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
 
     func applyContentBlocking() {
         guard let webView else { return }
-        ContentBlocker.shared.install(on: webView.configuration)
+        ContentBlocker.shared.install(on: webView.configuration,
+                                      temporarilyDisabled: contentBlockingBypassURL != nil)
+    }
+
+    static func isContentBlockerError(_ error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == "WebKitErrorDomain" && error.code == 104
+    }
+
+    static func sameContentBlockingOrigin(_ first: URL, _ second: URL) -> Bool {
+        func port(_ url: URL) -> Int? { url.port ?? (url.scheme == "https" ? 443 : 80) }
+        return first.scheme?.lowercased() == second.scheme?.lowercased()
+            && first.host?.lowercased() == second.host?.lowercased()
+            && port(first) == port(second)
+    }
+
+    var canAllowBlockedPage: Bool {
+        guard isContentBlocked, let request = failedRequest, let destination = request.url,
+              ["http", "https"].contains(destination.scheme?.lowercased() ?? ""),
+              destination.host != nil,
+              ["GET", "HEAD"].contains(request.httpMethod ?? "GET"),
+              request.httpBody == nil, request.httpBodyStream == nil else { return false }
+        return webView != nil
+    }
+
+    func allowBlockedPage() {
+        // Only an explicit click can enter this path. Never replay form bodies,
+        // change the global preference, or save an allowlist in profile/session data.
+        guard canAllowBlockedPage, let request = failedRequest, let view = webView else { return }
+        contentBlockingBypassURL = request.url
+        applyContentBlocking()
+        isContentBlocked = false
+        navigationError = nil
+        topResetNavigation = view.load(request)
+    }
+
+    private func resetContentBlockingBypass() {
+        guard contentBlockingBypassURL != nil else { return }
+        contentBlockingBypassURL = nil
+        applyContentBlocking()
+    }
+
+    private func validateContentBlockingBypass(for destination: URL?) {
+        guard let allowed = contentBlockingBypassURL, let destination else { return }
+        if !Self.sameContentBlockingOrigin(allowed, destination) { resetContentBlockingBypass() }
     }
 
     func adoptPopupWebView(configuration: WKWebViewConfiguration) -> WKWebView {
         if let webView { return webView }
+        // WebKit can supply the opener's controller here. Isolate mutable rules
+        // and message handlers before constructing the child, while preserving
+        // the supplied process/data store configuration and all user scripts.
+        let controller = WKUserContentController()
+        configuration.userContentController.userScripts.forEach { controller.addUserScript($0) }
+        configuration.userContentController = controller
+        ContentBlocker.shared.install(on: configuration)
         isStartPage = false
         title = BrowserTabTitle.display(documentTitle: nil, url: nil)
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.allowsBackForwardNavigationGestures = false
         view.allowsMagnification = true
         view.allowsLinkPreview = true
-        // WebKit 提供的弹窗 configuration 已继承父页面的 message handlers。
-        // 再次 add 同名 handler 会抛出 Objective-C 异常并直接终止 App。
-        configure(view, registerScriptMessageHandlers: false)
+        configure(view)
         return view
     }
 
@@ -750,6 +890,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     private func releaseWebView() {
+        contentBlockingBypassURL = nil
         navigationPolicyRevision = UUID()
         dismissSlowPageNotice()
         if let view = webView {
@@ -776,6 +917,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         pendingCredentialCapture = nil
         credentialCaptureWorkItem?.cancel()
         credentialCaptureWorkItem = nil
+        resetCredentialFrames()
         loadingObserver = nil
         titleObserver = nil
         urlObserver = nil
@@ -807,7 +949,9 @@ extension BrowserTab: WKNavigationDelegate {
         provisionalNavigation = navigation
         failedRequest = nil
         navigationError = nil
+        isContentBlocked = false
         navigationRevision = UUID()
+        resetCredentialFrames()
         dismissSlowPageNotice()
         recoveryRequest = pendingRequest
         slowPageDeadline = Date().addingTimeInterval(120)
@@ -822,6 +966,7 @@ extension BrowserTab: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        validateContentBlockingBypass(for: webView.url)
         failedRequest = nil
         pendingRequest = nil
         resetMediaAudibility()
@@ -883,8 +1028,14 @@ extension BrowserTab: WKNavigationDelegate {
         if navigation === provisionalNavigation, (error as NSError).code != NSURLErrorCancelled {
             dismissSlowPageNotice()
             navigationError = error.localizedDescription
+            isContentBlocked = Self.isContentBlockerError(error)
+            if isContentBlocked { failedRequest = pendingRequest }
         }
         syncNavigationState()
+    }
+
+    func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        validateContentBlockingBypass(for: webView.url)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -892,6 +1043,7 @@ extension BrowserTab: WKNavigationDelegate {
             dismissSlowPageNotice()
             failedRequest = pendingRequest
             navigationError = error.localizedDescription
+            isContentBlocked = Self.isContentBlockerError(error)
             if let destination = failedRequest?.url { url = destination }
         }
         syncNavigationState()
@@ -918,6 +1070,7 @@ extension BrowserTab: WKNavigationDelegate {
         if navigationAction.shouldPerformDownload { return .download }
         if navigationAction.targetFrame?.isMainFrame == true,
            let destination = navigationAction.request.url {
+            validateContentBlockingBypass(for: destination)
             let policyRevision = UUID()
             navigationPolicyRevision = policyRevision
             pendingRequest = navigationAction.request
@@ -929,7 +1082,10 @@ extension BrowserTab: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
-        navigationResponse.canShowMIMEType ? .allow : .download
+        if navigationResponse.isForMainFrame {
+            validateContentBlockingBypass(for: navigationResponse.response.url)
+        }
+        return navigationResponse.canShowMIMEType ? .allow : .download
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
@@ -1302,16 +1458,42 @@ extension BrowserTab {
         guard message.name == CredentialBridge.handlerName,
               let body = message.body as? [String: Any],
               let type = body["type"] as? String,
-              let origin = body["origin"] as? String,
-              CredentialStore.sharesSite(origin: origin, with: webView?.url) else { return }
+              let origin = body["origin"] as? String else { return }
         // The body's origin is page-controlled. Verify WebKit's frame identity.
         let frameOrigin = message.frameInfo.securityOrigin
         var frameComponents = URLComponents()
         frameComponents.scheme = frameOrigin.protocol
         frameComponents.host = frameOrigin.host
         frameComponents.port = frameOrigin.port == 0 ? nil : frameOrigin.port
-        guard let trustedOrigin = frameComponents.string,
-              CredentialStore.sharesSite(origin: trustedOrigin, with: webView?.url) else { return }
+        guard let trustedOrigin = frameComponents.string.flatMap(CredentialStore.normalizedScope),
+              CredentialStore.normalizedScope(origin) == trustedOrigin else { return }
+
+        if !CredentialStore.sharesSite(origin: trustedOrigin, with: webView?.url) {
+            // 同站内嵌登录框：凭据按框架自己的源保存和填充，不与页面源混用。
+            guard !message.frameInfo.isMainFrame,
+                  CredentialStore.isSameSite(origin: trustedOrigin, with: webView?.url) else { return }
+            switch type {
+            case "formReady":
+                rememberCredentialFrame(message.frameInfo, scope: trustedOrigin)
+                windowState?.tryAutomaticCredentialFill(self)
+            case "submit":
+                guard !isPrivate,
+                      let username = body["username"] as? String,
+                      let password = body["password"] as? String,
+                      !password.isEmpty else { return }
+                rememberCredentialFrame(message.frameInfo, scope: trustedOrigin)
+                recordCredentialCapture(
+                    scope: trustedOrigin,
+                    username: username,
+                    password: password,
+                    pageURL: webView?.url,
+                    frame: message.frameInfo
+                )
+            default:
+                break
+            }
+            return
+        }
 
         if type == "formReady" {
             // The JS notification carries no credentials. Native readiness probe

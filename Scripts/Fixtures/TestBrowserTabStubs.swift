@@ -19,7 +19,12 @@ enum CredentialBridge {
 
 final class ContentBlocker {
     static let shared = ContentBlocker()
-    func install(on configuration: WKWebViewConfiguration) {}
+    var fixtureRule: WKContentRuleList?
+    func install(on configuration: WKWebViewConfiguration, temporarilyDisabled: Bool = false) {
+        guard let fixtureRule else { return }
+        configuration.userContentController.remove(fixtureRule)
+        if !temporarilyDisabled { configuration.userContentController.add(fixtureRule) }
+    }
 }
 
 struct WebCredential {
@@ -31,6 +36,7 @@ enum CredentialStore {
     static func scope(for url: URL) -> String? { url.host }
     static func normalizedScope(_ origin: String) -> String? { origin }
     static func sharesSite(origin: String, with url: URL?) -> Bool { false }
+    static func isSameSite(origin: String, with url: URL?) -> Bool { false }
 }
 
 enum FaviconService {

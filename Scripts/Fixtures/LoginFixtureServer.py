@@ -35,8 +35,20 @@ FRAME_LOGIN = """<!DOCTYPE html>
 <input type="password" id="frame-pass" autocomplete="current-password" placeholder="iframe 密码">
 <script>
 addEventListener('message', event => {
-  if (event.origin !== 'http://localhost:18771' || event.data !== 'fixture-check-empty') return;
-  parent.postMessage({fixtureEmpty: !document.getElementById('frame-user').value && !document.getElementById('frame-pass').value}, event.origin);
+  if (event.origin !== 'http://localhost:18771') return;
+  const user = document.getElementById('frame-user');
+  const pass = document.getElementById('frame-pass');
+  if (event.data === 'fixture-check-empty') {
+    parent.postMessage({fixtureEmpty: !(user && user.value) && !(pass && pass.value)}, event.origin);
+  } else if (event.data === 'fixture-read-values') {
+    parent.postMessage({fixtureValues: (user ? user.value : '') + '|' + (pass ? pass.value : '')}, event.origin);
+  } else if (event.data === 'fixture-submit') {
+    // 模拟用户在内嵌登录框输入并回车，随后登录框消失（登录成功）。
+    user.value = 'frame-user';
+    pass.value = 'frame-secret';
+    pass.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+    setTimeout(() => { document.body.innerHTML = '<p>signed in</p>'; }, 50);
+  }
 });
 </script>
 </body></html>"""

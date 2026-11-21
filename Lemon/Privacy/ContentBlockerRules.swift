@@ -1,17 +1,19 @@
 import Foundation
 
 enum ContentBlockerRules {
-    static let identifier = "com.lemon.browser.ads.v1"
+    // A new identifier prevents WKContentRuleListStore from reusing the v1
+    // substring rules after upgrading an existing installation.
+    static let identifier = "com.lemon.browser.ads.v2"
 
-    static let blockedURLFilters = [
+    private static let blockedHostPatterns = [
         "doubleclick\\.net",
         "googleadservices\\.com",
         "googlesyndication\\.com",
         "googletagservices\\.com",
         "2mdn\\.net",
         "google-analytics\\.com",
-        "adservice\\.google\\.",
-        "pagead2\\.",
+        "adservice\\.google\\.[a-z0-9-]+(\\.[a-z0-9-]+)*",
+        "pagead2\\.[a-z0-9-]+(\\.[a-z0-9-]+)*",
         "ads\\.yahoo\\.com",
         "ads-twitter\\.com",
         "static\\.ads-twitter\\.com",
@@ -64,6 +66,13 @@ enum ContentBlockerRules {
         "admaster\\.com\\.cn",
         "lianmeng\\.360\\.cn"
     ]
+
+    static let blockedURLFilters = blockedHostPatterns.map { host in
+        // Match an entire HTTP(S) hostname (including real subdomains), never
+        // a suffix inside another label, a URL path, userinfo or a query value.
+        // WebKit serializes HTTP(S) URLs with a slash after the authority.
+        "^https?://([a-z0-9-]+\\.)*" + host + "(:[0-9]+)?/"
+    }
 
     static let hiddenSelectors = [
         "ins.adsbygoogle",

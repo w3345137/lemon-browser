@@ -2,6 +2,76 @@ import SwiftUI
 import WebKit
 
 enum WebKitFactory {
+    /// Capture only the Enter used to confirm an IME composition. The isolated
+    /// world shares DOM events with the page, without exporting app state to it.
+    static let inputMethodCompatibilityScript = WKUserScript(
+        source: #"""
+        (() => {
+          const states = new WeakMap();
+          const editorFor = (event) => {
+            const target = event.composedPath()[0] || event.target;
+            if (!(target instanceof Element)) return null;
+            if (target instanceof HTMLTextAreaElement) return target;
+            if (target instanceof HTMLInputElement) {
+              return /^(text|search|email|url|tel|password|number)$/.test(target.type) ? target : null;
+            }
+            return target.isContentEditable ? target.closest('[contenteditable]') : null;
+          };
+          const stateFor = (editor) => {
+            if (!states.has(editor)) states.set(editor, {
+              composing: false, endedAt: null, confirmedAt: null, suppressKeyUp: false
+            });
+            return states.get(editor);
+          };
+          const isEnter = (event) => event.key === 'Enter'
+            || event.code === 'Enter' || event.code === 'NumpadEnter';
+          window.addEventListener('compositionstart', (event) => {
+            const editor = editorFor(event); if (!editor) return;
+            const state = stateFor(editor);
+            state.composing = true; state.endedAt = null; state.confirmedAt = null;
+            state.suppressKeyUp = false;
+          }, true);
+          window.addEventListener('compositionend', (event) => {
+            const editor = editorFor(event); if (!editor) return;
+            const state = stateFor(editor);
+            state.composing = false;
+            // In spec-order engines, the confirming keydown was handled already.
+            state.endedAt = state.confirmedAt !== null
+              && Math.abs(event.timeStamp - state.confirmedAt) < 50 ? null : event.timeStamp;
+            state.confirmedAt = null;
+          }, true);
+          window.addEventListener('keydown', (event) => {
+            const editor = editorFor(event); if (!editor || !isEnter(event)) return;
+            const state = stateFor(editor);
+            // Explicit modified shortcuts keep their normal meaning.
+            if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+              state.suppressKeyUp = false; return;
+            }
+            const justEnded = state.endedAt !== null && Math.abs(event.timeStamp - state.endedAt) < 50;
+            const confirming = event.isComposing || event.keyCode === 229 || state.composing || justEnded;
+            state.suppressKeyUp = confirming;
+            if (!confirming) return;
+            state.endedAt = null;
+            state.confirmedAt = event.timeStamp;
+            // Do not cancel native text confirmation while composition is active.
+            // Older WebKit commits before keydown; suppress implicit form submit then.
+            if (!event.isComposing && !state.composing) event.preventDefault();
+            event.stopImmediatePropagation();
+          }, true);
+          window.addEventListener('keyup', (event) => {
+            const editor = editorFor(event); if (!editor || !isEnter(event)) return;
+            const state = stateFor(editor);
+            if (!state.suppressKeyUp) return;
+            state.suppressKeyUp = false;
+            event.preventDefault(); event.stopImmediatePropagation();
+          }, true);
+        })();
+        """#,
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: false,
+        in: .defaultClient
+    )
+
     @MainActor
     static func makeConfiguration(isPrivate: Bool, dataStore: WKWebsiteDataStore? = nil) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
@@ -32,6 +102,7 @@ enum WebKitFactory {
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: false
         )
+        configuration.userContentController.addUserScript(inputMethodCompatibilityScript)
         configuration.userContentController.addUserScript(hoverScript)
         configuration.userContentController.addUserScript(CredentialBridge.captureScript)
         configuration.userContentController.addUserScript(MediaAudibilityBridge.userScript)

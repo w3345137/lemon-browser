@@ -105,22 +105,29 @@ enum CredentialBridge {
       }
       return best;
     };
+    // Both the readiness probe and the actual write use the same visible field pair.
+    const loginPair = (root, automatic) => {
+      for (const p of collectInputs(root)) {
+        if (!isPassword(p)) continue;
+        const u = usernameFor(p, p.form || root);
+        if (automatic && (!u || p.readOnly || nativeValue(p) ||
+            p.autocomplete.split(/\s+/).includes('new-password'))) continue;
+        return {p, u};
+      }
+      return null;
+    };
     """#
 
     /// 填充主体：在当前文档和同源 iframe 里找密码框并填入。
     /// 依赖 sharedDOMHelpersSource 中的辅助函数。
     private static let fillBodySource = #"""
     const fillRoot = (root) => {
-      const passwordInput = collectInputs(root).find(isPassword);
-      if (!passwordInput) return false;
-      const usernameInput = usernameFor(passwordInput, passwordInput.form || root);
-      if (typeof automatic !== 'undefined' && automatic) {
-        if (passwordInput.autocomplete === 'new-password' || !usernameInput ||
-            nativeValue(usernameInput) || nativeValue(passwordInput)) return false;
-      }
-      // 360 中存在“仅密码”凭据。空账号代表不要改动账号框，不能把用户
-      // 已经输入的账号清空。
-      if (usernameInput && username.length > 0) setValue(usernameInput, username);
+      const pair = loginPair(root, automatic);
+      if (!pair) return false;
+      const {p: passwordInput, u: usernameInput} = pair;
+      const existing = usernameInput ? nativeValue(usernameInput) : '';
+      if (automatic && existing && existing !== username) return false;
+      if (usernameInput && username && existing !== username) setValue(usernameInput, username);
       setValue(passwordInput, password);
       if (typeof automatic === 'undefined' || !automatic) passwordInput.focus();
       return true;
@@ -140,16 +147,20 @@ enum CredentialBridge {
         "((username, password, automatic = false) => {\n" + sharedDOMHelpersSource + "\n" + fillBodySource + "\n})"
 
     static let automaticFillReadinessScript = "(() => {\n" + sharedDOMHelpersSource + #"""
-    const ready = root => collectInputs(root).some(p => {
-      if (!isPassword(p) || p.autocomplete === 'new-password' || nativeValue(p)) return false;
-      const u = usernameFor(p, p.form || root);
-      return !!u && !nativeValue(u);
-    });
-    if (ready(document)) return true;
+    const account = root => {
+      const pair = loginPair(root, true);
+      return pair ? nativeValue(pair.u) : null;
+    };
+    const main = account(document);
+    if (main !== null) return main;
     for (const frame of document.querySelectorAll('iframe')) {
-      try { if (frame.contentDocument && ready(frame.contentDocument)) return true; } catch (_) {}
+      try {
+        if (!frame.contentDocument) continue;
+        const nested = account(frame.contentDocument);
+        if (nested !== null) return nested;
+      } catch (_) {}
     }
-    return false;
+    return null;
     })()
     """#
 
@@ -209,23 +220,20 @@ enum CredentialBridge {
           let lastSent = '';
           // DOM-ready is not form-ready: IAM reveals its iframe login controls
           // after asynchronous initialization. Notify only on a ready transition.
-          let wasReady = false, readinessTimer = null;
+          let lastReadyAccount = null, readinessTimer = null;
           const checkReadiness = () => {
             readinessTimer = null;
-            const ready = collectInputs(document).some(p => {
-              if (!isPassword(p) || p.autocomplete === 'new-password' || nativeValue(p)) return false;
-              const u = usernameFor(p, p.form || document);
-              return !!u && !nativeValue(u);
-            });
-            if (ready && !wasReady) send({type: 'formReady', origin: location.origin});
-            wasReady = ready;
+            const pair = loginPair(document, true);
+            const account = pair ? nativeValue(pair.u) : null;
+            if (account !== null && account !== lastReadyAccount) send({type: 'formReady', origin: location.origin});
+            lastReadyAccount = account;
           };
           const scheduleReadiness = () => {
             if (readinessTimer === null) readinessTimer = setTimeout(checkReadiness, 100);
           };
           new MutationObserver(scheduleReadiness).observe(document.documentElement,
             {subtree: true, childList: true, attributes: true,
-             attributeFilter: ['class','style','hidden','type','autocomplete','disabled']});
+             attributeFilter: ['class','style','hidden','type','autocomplete','disabled','value','readonly']});
           document.addEventListener('input', scheduleReadiness, true);
           window.addEventListener('pageshow', scheduleReadiness);
           scheduleReadiness();
@@ -279,6 +287,7 @@ enum CredentialBridge {
           }, true);
           document.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter') return;
+            if (event.isComposing || event.keyCode === 229) return;
             if (!(event.target instanceof HTMLInputElement)) return;
             setTimeout(() => capture(event.target.form || document, 'enter'), 0);
           }, true);
